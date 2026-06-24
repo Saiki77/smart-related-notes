@@ -206,3 +206,52 @@
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* =============================================================================
+   Feature A — inline glow (CodeMirror 6 Decoration.mark).
+   A subtle, restyleable highlight on a phrase that matches an existing note,
+   inviting a one-click [[link]] conversion. Class-only (never collapses text),
+   built on core CSS variables so a theme/snippet can override it.
+   ============================================================================= */
+.srn-glow {
+  border-radius: var(--radius-s);
+  background-color: var(--text-highlight-bg);
+  box-shadow: inset 0 -1px 0 0 var(--interactive-accent);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.srn-glow:hover {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  box-shadow: inset 0 -1px 0 0 var(--interactive-accent);
+}
+
+/* =============================================================================
+   Feature B — smart `[[` suggester rows.
+   The "create new note" row reads as creation, not navigation; the semantic
+   badge is a muted relevance hint.
+   ============================================================================= */
+.srn-new-suggestion .suggestion-title {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+}
+
+.srn-new-suggestion .srn-new-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-accent);
+}
+
+.srn-new-suggestion .suggestion-note {
+  color: var(--text-accent);
+}
+
+.suggestion-aux.srn-semantic-badge {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}

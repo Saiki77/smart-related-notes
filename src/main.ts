@@ -11,9 +11,11 @@ import {
   TFile,
   TAbstractFile,
   WorkspaceLeaf,
+  MarkdownView,
   Notice,
   normalizePath,
   debounce,
+  type Editor,
   type Debouncer,
 } from "obsidian";
 import {
@@ -23,6 +25,26 @@ import {
 } from "./embeddings";
 import { IndexStore, stripMarkdown, type IndexStoreOptions } from "./index-store";
 import { RelatedNotesView, VIEW_TYPE_RELATED } from "./view";
+import { TitleIndex } from "./title-index";
+import {
+  glowPlugin,
+  glowBridge,
+  detectMentions,
+  applyMentions,
+  buildWikiLink,
+} from "./link-glow";
+import { SmartLinkSuggester } from "./link-suggester";
+
+// The internal, undocumented suggester registry. Both our suggester and
+// easy-links' unshift to the FRONT of this array to win the plain `[[` case. We
+// touch it only through these narrow interfaces, wrapped in try/catch, and fall
+// back to ordinary registration if the shape ever changes.
+interface EditorSuggestManager {
+  suggests: unknown[];
+}
+interface WorkspaceWithSuggest {
+  editorSuggest?: EditorSuggestManager;
+}
 
 // --- settings ---------------------------------------------------------------
 
@@ -41,6 +63,19 @@ export interface RelatedNotesSettings {
   showRecency: boolean; // muted "edited Nd ago" line
   maxChunks: number; // body-chunk cap (advanced)
   shortlistSize: number; // Stage-1 -> Stage-2 funnel width (advanced)
+  // --- linking (Features A + B) ---
+  glowEnabled: boolean; // inline glow + 1-click link (Feature A)
+  glowRestrictToLivePreview: boolean; // only decorate live preview
+  glowAmbiguous: boolean; // glow a surface owned by 2+ notes (off = precision)
+  autoLinkSubsequent: boolean; // idle auto-link of 2nd..Nth mentions (opt-in)
+  suggesterEnabled: boolean; // smart `[[` suggester (Feature B)
+  suggesterTakeOver: boolean; // move our suggester to the front of the `[[` popup
+  // True once the user has EXPLICITLY toggled suggesterTakeOver. While false the
+  // effective default is auto-derived against easy-links at layout-ready; once
+  // true the stored value is honoured verbatim (never silently flipped).
+  suggesterTakeOverUserSet: boolean;
+  suggestNewNotes: boolean; // propose "create new note" rows
+  newNoteMinSimilarity: number; // confidence floor for a new-note proposal
 }
 
 export const DEFAULT_SETTINGS: RelatedNotesSettings = {
@@ -62,6 +97,19 @@ export const DEFAULT_SETTINGS: RelatedNotesSettings = {
   showRecency: false,
   maxChunks: 16,
   shortlistSize: 60,
+  // Precision-first, low-risk behaviors ON; riskier ones OFF. suggesterTakeOver's
+  // effective default is computed against easy-links at layout-ready (see
+  // resolveSuggesterTakeOver) so we don't fight it; the stored value is the
+  // user's explicit override once they toggle it.
+  glowEnabled: true,
+  glowRestrictToLivePreview: true,
+  glowAmbiguous: false,
+  autoLinkSubsequent: false,
+  suggesterEnabled: true,
+  suggesterTakeOver: true,
+  suggesterTakeOverUserSet: false,
+  suggestNewNotes: true,
+  newNoteMinSimilarity: 0.45,
 };
 
 // A few vetted model ids surfaced as a dropdown so users don't have to memorise
@@ -120,7 +168,22 @@ const ORT_PROBE_FILE = "ort/ort-wasm-simd-threaded.jsep.wasm";
 export default class RelatedNotesPlugin extends Plugin {
   declare settings: RelatedNotesSettings;
   store!: IndexStore;
+  // Held by the plugin and shared by BOTH link features (glow + suggester).
+  titleIndex!: TitleIndex;
   private engine!: EmbeddingEngine;
+
+  // The smart `[[` suggester instance (Feature B), so settings changes can
+  // re-assert/remove its precedence in the popup.
+  private suggester: SmartLinkSuggester | null = null;
+  // True while our suggester sits at the FRONT of the manager's suggests array.
+  private suggesterPrioritised = false;
+
+  // Coalesces TitleIndex rebuilds across bulk-edit bursts (aliases/titles change
+  // without a vector re-embed, so this is independent of debouncedUpdate).
+  private debouncedTitleRefresh!: Debouncer<[], void>;
+  // Idle auto-link-subsequent pass for the active file (opt-in; ~3s after the
+  // last edit). Lighter + separate from the 20s re-embed debounce.
+  private debouncedAutoLink!: Debouncer<[string], void>;
 
   // The model id / device preference the current engine was built for. Compared
   // against settings on save to decide whether a re-embed is actually needed —
@@ -165,6 +228,9 @@ export default class RelatedNotesPlugin extends Plugin {
       this.storeOptions(),
     );
 
+    // The precision backbone for both link features.
+    this.titleIndex = new TitleIndex(this.app);
+
     this.registerView(VIEW_TYPE_RELATED, (leaf) => new RelatedNotesView(leaf, this));
 
     this.addRibbonIcon("sparkles", "Smart related notes", () => {
@@ -187,13 +253,52 @@ export default class RelatedNotesPlugin extends Plugin {
       },
     });
 
+    // --- Feature A: inline glow + 1-click link -------------------------------
+    // Seed the module-scoped bridge the ViewPlugin reads, then register the CM6
+    // extension. @codemirror/* is externalized so this uses Obsidian's singleton.
+    this.syncGlowBridge();
+    glowBridge.insert = (range) => this.insertLinkAtRange(range);
+    this.registerEditorExtension([glowPlugin]);
+
+    this.addCommand({
+      id: "link-all-mentions",
+      name: "Link all unlinked mentions in this note",
+      editorCallback: (editor, view) => {
+        this.linkAllMentions(editor, view.file);
+      },
+    });
+
+    // --- Feature B: smart `[[` suggester -------------------------------------
+    this.suggester = new SmartLinkSuggester(this);
+    this.registerEditorSuggest(this.suggester);
+
     this.addSettingTab(new RelatedNotesSettingTab(this.app, this));
 
-    // Re-rank the panel when the active note changes (the view debounces internally).
+    // Re-rank the panel when the active note changes (the view debounces
+    // internally), and stamp the active file path onto the glow bridge so the CM6
+    // ViewPlugin excludes self-surfaces + scopes its skip ranges to this note.
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
         this.getView()?.requestRender();
+        this.syncActivePath();
+        // Force every glow ViewPlugin to rebuild now, so the switched-to note
+        // deterministically uses its OWN alternation/self-exclusion instead of
+        // waiting for an incidental viewport/doc update to refresh it.
+        this.app.workspace.updateOptions();
       }),
+    );
+    this.syncActivePath();
+
+    // --- TitleIndex invalidation (independent of the embedding index) --------
+    // Titles/aliases change the glow alternation + suggester surfaces but NOT the
+    // embeddings, so this is its own debounced refresh. Coalesces bulk bursts.
+    this.debouncedTitleRefresh = debounce(() => this.refreshTitleIndex(), 1500, false);
+
+    // --- idle auto-link-subsequent (opt-in) ----------------------------------
+    this.debouncedAutoLink = debounce(
+      (path: string) => this.autoLinkSubsequent(path),
+      3000,
+      false,
     );
 
     // --- incremental index maintenance ---------------------------------------
@@ -206,6 +311,16 @@ export default class RelatedNotesPlugin extends Plugin {
         if (file instanceof TFile && file.extension === "md") {
           this.dirty.add(file.path);
           this.debouncedUpdate(file);
+          // Title text can change on a modify; refresh the (cheap) title index too.
+          this.debouncedTitleRefresh();
+          // Idle auto-link the active note's later mentions (opt-in; cursor-aware,
+          // re-validating) only when this is the active file.
+          if (
+            this.settings.autoLinkSubsequent &&
+            file.path === this.app.workspace.getActiveFile()?.path
+          ) {
+            this.debouncedAutoLink(file.path);
+          }
         }
       }),
     );
@@ -214,6 +329,8 @@ export default class RelatedNotesPlugin extends Plugin {
         if (file instanceof TFile && file.extension === "md") {
           this.dirty.add(file.path);
           this.debouncedUpdate(file);
+          this.titleIndex.markDirty();
+          this.debouncedTitleRefresh();
         }
       }),
     );
@@ -221,6 +338,9 @@ export default class RelatedNotesPlugin extends Plugin {
       this.app.vault.on("delete", (file: TAbstractFile) => {
         this.store.removeFile(file.path);
         this.snippetCache.delete(file.path);
+        this.titleIndex.markDirty();
+        this.suggester?.invalidateAliasCache(file.path);
+        this.debouncedTitleRefresh();
         this.getView()?.requestRender();
       }),
     );
@@ -232,19 +352,39 @@ export default class RelatedNotesPlugin extends Plugin {
         } else {
           this.store.removeFile(oldPath);
         }
+        this.titleIndex.markDirty();
+        this.suggester?.invalidateAliasCache(oldPath);
+        if (file instanceof TFile) this.suggester?.invalidateAliasCache(file.path);
+        this.debouncedTitleRefresh();
         this.getView()?.requestRender();
+      }),
+    );
+    // Aliases change without bumping mtime, so drop caches on the metadata
+    // 'changed' event (the exact reason easy-links does too).
+    this.registerEvent(
+      this.app.metadataCache.on("changed", (file) => {
+        this.titleIndex.markDirty();
+        this.suggester?.invalidateAliasCache(file.path);
+        this.debouncedTitleRefresh();
       }),
     );
 
     // Load (or build) the index once the layout is ready, so the vault file list
-    // and metadata cache are fully populated first.
+    // and metadata cache are fully populated first. Also resolve the suggester
+    // take-over default against easy-links and apply precedence now that the core
+    // suggester is registered.
     this.app.workspace.onLayoutReady(() => {
       void this.bootstrapIndex();
+      this.refreshTitleIndex();
+      this.resolveSuggesterTakeOver();
+      this.applySuggesterPrecedence();
     });
   }
 
   onunload(): void {
-    // The registered view is torn down by Obsidian; nothing else global to clean.
+    // The registered view + editor extension + suggest registration are torn down
+    // by Obsidian; we only undo the manual precedence reorder we made.
+    this.removeSuggesterPrecedence();
   }
 
   // --- wasm path resolution --------------------------------------------------
@@ -314,6 +454,210 @@ export default class RelatedNotesPlugin extends Plugin {
     this.getView()?.requestRender();
   }
 
+  // --- link features: glow bridge + insertion --------------------------------
+  // Push the current settings + titleIndex onto the module-scoped bridge the CM6
+  // ViewPlugin reads. Called on load and on every settings change.
+  private syncGlowBridge(): void {
+    glowBridge.enabled = this.settings.glowEnabled;
+    glowBridge.restrictToLivePreview = this.settings.glowRestrictToLivePreview;
+    glowBridge.glowAmbiguous = this.settings.glowAmbiguous;
+    // When auto-link-subsequent is on we glow every occurrence as a preview of what
+    // will be linked; otherwise only the first unlinked occurrence glows.
+    glowBridge.glowAll = this.settings.autoLinkSubsequent;
+    glowBridge.titleIndex = this.titleIndex;
+    // The app handle lets buildGlow resolve each EditorView's OWN file (split-pane
+    // correct) instead of relying on the single global active path.
+    glowBridge.app = this.app;
+  }
+
+  // Stamp the active markdown file's path onto the glow bridge so the ViewPlugin
+  // scopes self-exclusion + skip ranges to the right note.
+  private syncActivePath(): void {
+    glowBridge.activePath = this.app.workspace.getActiveFile()?.path ?? null;
+  }
+
+  // Rebuild the title index now (its rebuild is lazy, so we just mark dirty and
+  // force a recompute through a resolve-style touch), then force every editor to
+  // re-derive its glow decorations with the fresh alternation.
+  private refreshTitleIndex(): void {
+    this.titleIndex.markDirty();
+    // Force the CM6 ViewPlugin(s) to rebuild so the glow reflects the new titles.
+    this.app.workspace.updateOptions();
+  }
+
+  // Insert a wikilink for a clicked glow range. Resolved through the TitleIndex
+  // (so an alias keeps its display text) and applied via the active editor's
+  // replaceRange, which joins Obsidian undo + link bookkeeping and re-fires the
+  // metadataCache 'changed' event (refreshing both indexes).
+  private insertLinkAtRange(range: {
+    from: number;
+    to: number;
+    surface: string;
+  }): void {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const editor = view?.editor;
+    if (!editor) return;
+    try {
+      const resolved = this.titleIndex.resolve(range.surface);
+      if (!resolved) return;
+      const fromPos = editor.offsetToPos(range.from);
+      const toPos = editor.offsetToPos(range.to);
+      // Re-validate the live text against the surface before mutating.
+      if (editor.getRange(fromPos, toPos) !== range.surface) return;
+      const link = buildWikiLink(resolved.file, range.surface, this.titleIndex);
+      editor.replaceRange(link, fromPos, toPos);
+    } catch (e) {
+      console.warn("[related-notes] glow link insertion failed", e);
+    }
+  }
+
+  // Command: link EVERY surviving unlinked mention in the active note, across all
+  // target notes, in one undo step (descending offsets, re-validated per range).
+  private linkAllMentions(editor: Editor, file: TFile | null): void {
+    if (!file) return;
+    try {
+      const mentions = detectMentions(
+        editor.getValue(),
+        this.titleIndex,
+        file.path,
+        { all: true, allowAmbiguous: this.settings.glowAmbiguous },
+      );
+      const n = applyMentions(editor, mentions, this.titleIndex);
+      new Notice(
+        n === 0
+          ? "Related notes: no unlinked mentions to link."
+          : `Related notes: linked ${n} mention${n === 1 ? "" : "s"}.`,
+      );
+    } catch (e) {
+      console.warn("[related-notes] link-all failed", e);
+      new Notice("Related notes: linking failed. See the console.");
+    }
+  }
+
+  // Idle auto-link of the 2nd..Nth mentions (opt-in). For each target that ALREADY
+  // has at least one existing `[[link]]` in the note, link its remaining surviving
+  // occurrences. Re-validates each range against the CURRENT text and never
+  // touches the range the cursor occupies, so it can't race the typist.
+  private autoLinkSubsequent(path: string): void {
+    if (!this.settings.autoLinkSubsequent) return;
+    const active = this.app.workspace.getActiveFile();
+    if (!active || active.path !== path) return;
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const editor = view?.editor;
+    if (!editor || view.file?.path !== path) return;
+
+    try {
+      // Targets the note already links to — only THOSE get their later mentions
+      // auto-linked (so we never invent a first link silently).
+      const cache = this.app.metadataCache.getFileCache(active);
+      const linkedTargets = new Set<string>();
+      for (const l of cache?.links ?? []) {
+        const dest = this.app.metadataCache.getFirstLinkpathDest(
+          l.link,
+          active.path,
+        );
+        if (dest) linkedTargets.add(dest.path);
+      }
+      if (linkedTargets.size === 0) return;
+
+      const cursorOffset = editor.posToOffset(editor.getCursor());
+      const all = detectMentions(editor.getValue(), this.titleIndex, active.path, {
+        all: true,
+        allowAmbiguous: this.settings.glowAmbiguous,
+      });
+      const toLink = all.filter((m) => {
+        const resolved = this.titleIndex.resolve(m.surface);
+        if (!resolved || !linkedTargets.has(resolved.file.path)) return false;
+        // Never auto-link the range the cursor is currently inside.
+        if (cursorOffset >= m.from && cursorOffset <= m.to) return false;
+        return true;
+      });
+      applyMentions(editor, toLink, this.titleIndex);
+    } catch (e) {
+      console.warn("[related-notes] auto-link-subsequent failed", e);
+    }
+  }
+
+  // --- suggester precedence (coexist with easy-links) ------------------------
+  // Resolve the EFFECTIVE take-over default ONCE, before the user has expressed an
+  // intent: when easy-links' smart suggester is active we default to NOT taking
+  // over (so we don't fight it); otherwise we take over. The moment the user
+  // toggles the setting (suggesterTakeOverUserSet=true) we never re-derive — their
+  // explicit choice is honoured on every launch, even with easy-links present.
+  private resolveSuggesterTakeOver(): void {
+    if (this.settings.suggesterTakeOverUserSet) return;
+    if (this.easyLinksSmartSuggesterActive()) {
+      // Defer to easy-links by default; the user can still flip the toggle.
+      this.settings.suggesterTakeOver = false;
+    }
+  }
+
+  // Detect whether easy-links is installed AND its smart `[[` suggester is on, via
+  // its public plugin instance settings. Read defensively (undocumented shape).
+  private easyLinksSmartSuggesterActive(): boolean {
+    try {
+      const plugins = (
+        this.app as unknown as {
+          plugins?: {
+            plugins?: Record<string, { settings?: { smartSuggester?: boolean } }>;
+          };
+        }
+      ).plugins?.plugins;
+      const easy = plugins?.["easy-links"];
+      return easy?.settings?.smartSuggester === true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Move our suggester to the FRONT of the manager's suggests array so it wins the
+  // plain `[[` case. Undocumented internal API: narrow typed interface + try/catch.
+  private applySuggesterPrecedence(): void {
+    if (!this.settings.suggesterEnabled || !this.settings.suggesterTakeOver) return;
+    if (this.suggesterPrioritised) return;
+    const suggester = this.suggester;
+    if (!suggester) return;
+    try {
+      const manager = (this.app.workspace as unknown as WorkspaceWithSuggest)
+        .editorSuggest;
+      const list = manager?.suggests;
+      if (!Array.isArray(list)) return;
+      const idx = list.indexOf(suggester);
+      if (idx !== -1) list.splice(idx, 1);
+      list.unshift(suggester);
+      this.suggesterPrioritised = true;
+    } catch {
+      // Internal shape changed — fall back to ordinary registration order.
+    }
+  }
+
+  // Reverse applySuggesterPrecedence: move our instance from the front back to the
+  // END (keeping it REGISTERED and inert when disabled — onTrigger returns null —
+  // rather than unregistering it).
+  private removeSuggesterPrecedence(): void {
+    if (!this.suggesterPrioritised) return;
+    const suggester = this.suggester;
+    if (!suggester) {
+      this.suggesterPrioritised = false;
+      return;
+    }
+    try {
+      const manager = (this.app.workspace as unknown as WorkspaceWithSuggest)
+        .editorSuggest;
+      const list = manager?.suggests;
+      if (Array.isArray(list)) {
+        const idx = list.indexOf(suggester);
+        if (idx !== -1) {
+          list.splice(idx, 1);
+          list.push(suggester);
+        }
+      }
+    } catch {
+      // Nothing to restore if the internal shape changed.
+    }
+    this.suggesterPrioritised = false;
+  }
+
   // --- view plumbing ---------------------------------------------------------
   getView(): RelatedNotesView | null {
     const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_RELATED);
@@ -379,6 +723,19 @@ export default class RelatedNotesPlugin extends Plugin {
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
     this.store.updateOptions(this.storeOptions());
+
+    // --- linking toggles: pure UI/extension state, NEVER an embedding rebuild ---
+    // These change what is glowed/suggested, not what is embedded, so they must
+    // bypass the model/shape rebuild branch below. Push them to the bridge,
+    // re-assert/remove suggester precedence, and force the glow ViewPlugin to
+    // rebuild via updateOptions() (also called by refreshTitleIndex paths).
+    this.syncGlowBridge();
+    if (this.settings.suggesterEnabled && this.settings.suggesterTakeOver) {
+      this.applySuggesterPrecedence();
+    } else {
+      this.removeSuggesterPrecedence();
+    }
+    this.app.workspace.updateOptions();
 
     // Only a MODEL or DEVICE-PREFERENCE change invalidates the stored vectors.
     // Compare against the last-APPLIED preferences (not the engine's resolved
@@ -701,6 +1058,123 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
           .onChange((v) => {
             this.plugin.settings.shortlistSize = v;
             valueEl.setText(String(v));
+            this.debouncedSave();
+          }),
+      );
+    }
+
+    // --- Linking (Features A + B) --------------------------------------------
+    new Setting(containerEl).setName("Linking").setHeading();
+
+    new Setting(containerEl)
+      .setName("Highlight linkable mentions")
+      .setDesc(
+        "Glow the first time a concept that already has a note is named in the current note. Click the glow to turn it into a [[wikilink]]. Matches exact titles and aliases only (precise — it never glows a phrase with no matching note).",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.glowEnabled).onChange(async (v) => {
+          this.plugin.settings.glowEnabled = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Highlight in live preview only")
+      .setDesc(
+        "Only show the glow in live preview (the normal reading/editing view), not in raw source mode.",
+      )
+      .addToggle((t) =>
+        t
+          .setValue(this.plugin.settings.glowRestrictToLivePreview)
+          .onChange(async (v) => {
+            this.plugin.settings.glowRestrictToLivePreview = v;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Highlight ambiguous mentions")
+      .setDesc(
+        "Also glow a phrase owned by two or more notes. Off by default for precision (an ambiguous mention can't be attributed to one note).",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.glowAmbiguous).onChange(async (v) => {
+          this.plugin.settings.glowAmbiguous = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Auto-link later mentions")
+      .setDesc(
+        "After a note is linked once (by click or the command), automatically link its remaining mentions in this note while you're idle. Opt-in: cursor-aware and re-validating, so it never clobbers what you're typing.",
+      )
+      .addToggle((t) =>
+        t
+          .setValue(this.plugin.settings.autoLinkSubsequent)
+          .onChange(async (v) => {
+            this.plugin.settings.autoLinkSubsequent = v;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Smart [[ suggestions")
+      .setDesc(
+        "When you type [[, rank existing notes by semantic relevance to what you're writing (reusing the index), not just by name.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.suggesterEnabled).onChange(async (v) => {
+          this.plugin.settings.suggesterEnabled = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Take over the [[ popup")
+      .setDesc(
+        "Put these suggestions at the top of the [[ popup. Off by default when the Easy Links smart suggester is active, so the two don't fight; turn on to prefer these.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.suggesterTakeOver).onChange(async (v) => {
+          this.plugin.settings.suggesterTakeOver = v;
+          // Mark the value as an explicit user choice so the easy-links-aware
+          // auto-default never re-derives (and silently overrides) it again.
+          this.plugin.settings.suggesterTakeOverUserSet = true;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Suggest new notes")
+      .setDesc(
+        "Offer to create a brand-new note for a strongly-relevant concept that doesn't have one yet, labelled clearly as new.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.suggestNewNotes).onChange(async (v) => {
+          this.plugin.settings.suggestNewNotes = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    {
+      const setting = new Setting(containerEl)
+        .setName("New-note confidence")
+        .setDesc(
+          "How relevant a concept must be before a “create new note” row is offered (0–1). Higher proposes fewer, more confident new notes.",
+        );
+      const fmt = (v: number) => v.toFixed(2);
+      const valueEl = setting.controlEl.createSpan({
+        cls: "related-notes-slider-value",
+        text: fmt(this.plugin.settings.newNoteMinSimilarity),
+      });
+      setting.addSlider((s) =>
+        s
+          .setLimits(0, 0.9, 0.05)
+          .setValue(this.plugin.settings.newNoteMinSimilarity)
+          .onChange((v) => {
+            this.plugin.settings.newNoteMinSimilarity = v;
+            valueEl.setText(fmt(v));
             this.debouncedSave();
           }),
       );

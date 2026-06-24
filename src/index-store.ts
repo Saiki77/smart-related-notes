@@ -536,6 +536,46 @@ export class IndexStore {
     this.options = options;
   }
 
+  // --- suggester support (Feature B) -----------------------------------------
+  // Embed an arbitrary context string with the SAME engine the index uses, so the
+  // smart `[[` suggester can rank notes by semantic relevance to the cursor's
+  // surrounding text without reaching into the engine privately. Returns a
+  // normalized Float32Array (or throws if the model can't load — the caller falls
+  // back to recency order).
+  async embedQuery(text: string): Promise<Float32Array> {
+    return this.engine.embed(text, "query");
+  }
+
+  // Rank every indexed note by cosine of its MEAN vector to a context vector,
+  // reusing the Stage-1 coarse-shortlist loop. Returns the top `limit` as
+  // { file, semantic } pairs. Cheap: O(notes * dims). The suggester blends this
+  // `semantic` ([0,1]) with a fuzzy text score when the user has typed a query.
+  //
+  // `excludePath` skips the active note itself the way rank() does — a context
+  // vector embedded from text INSIDE the active note is most similar to that
+  // note's own mean vector, so without this the active note ranks #1 and the
+  // suggester would offer a `[[Self]]` link.
+  rankForContext(
+    vec: Float32Array,
+    limit: number,
+    excludePath?: string,
+  ): { file: TFile; semantic: number }[] {
+    const scored: { entry: IndexEntry; semantic: number }[] = [];
+    for (const entry of this.entries.values()) {
+      if (excludePath !== undefined && entry.path === excludePath) continue;
+      if (entry.meanVector.length !== vec.length) continue;
+      scored.push({ entry, semantic: cosineSimilarity(vec, entry.meanVector) });
+    }
+    scored.sort((a, b) => b.semantic - a.semantic);
+    const out: { file: TFile; semantic: number }[] = [];
+    for (const { entry, semantic } of scored) {
+      const file = this.app.vault.getAbstractFileByPath(entry.path);
+      if (file instanceof TFile) out.push({ file, semantic });
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
   // Swap the embedding engine in place and drop every vector (a different model or
   // device invalidates them all). Keeps the same listener Set, so a view already
   // subscribed to this store keeps receiving the rebuild's progress. The caller

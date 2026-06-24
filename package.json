@@ -1,6 +1,6 @@
 {
   "name": "related-notes",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "Surface notes ranked by local semantic similarity to the one you're reading, as a sidebar card stack.",
   "main": "main.js",
   "scripts": {
@@ -27,6 +27,8 @@
     "onnxruntime-web": "1.22.0-dev.20250409-89f8206ba4"
   },
   "devDependencies": {
+    "@codemirror/state": "^6.7.0",
+    "@codemirror/view": "^6.43.2",
     "@types/node": "^22.0.0",
     "@typescript-eslint/parser": "^8.60.1",
     "esbuild": "^0.24.0",
