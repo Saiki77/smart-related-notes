@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (Obsidian plugin guidelines)
+        run: npm run lint
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Verify manifest version matches tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          MANIFEST_VERSION=$(node -p "require('./manifest.json').version")
+          TAG_VERSION="${TAG#v}"
+          if [ "$MANIFEST_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag $TAG_VERSION does not match manifest.json version $MANIFEST_VERSION"
+            exit 1
+          fi
+
+      - name: Verify shipped wasm matches the bundled onnxruntime-web build
+        run: |
+          # The runtime loads ort/*.wasm; it MUST be the exact build transformers
+          # bundled, or WASM init fails. Fail the release if the file is missing.
+          test -f ort/ort-wasm-simd-threaded.jsep.wasm
+          test -f ort/ort-wasm-simd-threaded.jsep.mjs
+          ORT_VERSION=$(node -p "require('onnxruntime-web/package.json').version")
+          echo "Shipping onnxruntime-web@${ORT_VERSION} wasm assets."
+
+      - name: Package plugin folder (includes self-hosted wasm)
+        run: |
+          mkdir -p dist/related-notes
+          cp main.js manifest.json styles.css dist/related-notes/
+          cp -r ort dist/related-notes/ort
+          (cd dist && zip -r ../related-notes.zip related-notes)
+
+      - name: Extract release notes from annotated tag
+        run: |
+          git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "Release ${GITHUB_REF_NAME} of Related Notes." > release-notes.md
+          fi
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
+            related-notes.zip
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: false
+          files: |
+            main.js
+            manifest.json
+            styles.css
+            related-notes.zip

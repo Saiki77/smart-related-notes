@@ -1,0 +1,12 @@
+node_modules/
+main.js
+ort/
+src/ort-version.ts
+*.js.map
+.DS_Store
+*.log
+.env
+.env.local
+.vscode/
+.idea/
+data.json
