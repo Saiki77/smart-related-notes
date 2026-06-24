@@ -39,21 +39,36 @@ export function setWasmBaseUrl(url: string): void {
   wasmBaseUrl = url.endsWith("/") ? url : `${url}/`;
 }
 
+// The onnxruntime-web wasm flags. ort reads these from ort.env.wasm.
+interface OrtWasmFlags {
+  wasmPaths?: string | Record<string, string>;
+  numThreads?: number;
+  proxy?: boolean;
+}
+
 function configureEnv(): void {
   if (envConfigured) return;
   env.allowRemoteModels = true;
   env.allowLocalModels = false;
   env.useBrowserCache = true;
-  // `env.backends.onnx.wasm` is typed optional; it is always present at runtime
-  // (it's the web runtime now), but guard the access so the build stays
-  // strict-null clean.
-  const wasm = env.backends?.onnx?.wasm;
-  if (wasm) {
+  // CRITICAL: onnxruntime reads its wasm flags from ort.env.wasm, which
+  // transformers exposes as `env.backends.onnx.env.wasm` — NOT
+  // `env.backends.onnx.wasm` (that's undefined). Setting the wrong object meant
+  // numThreads=1 never applied: Obsidian's renderer is cross-origin isolated, so
+  // ort defaulted to multi-threading, spawned a pthread worker, and that worker
+  // tried to `import('worker_threads')` (a Node-only module) — the "Failed to
+  // resolve module specifier 'worker_threads'" / "no available backend" error.
+  // Set the flags on BOTH shapes so the object ort actually reads is always hit.
+  const onnx = env.backends?.onnx as
+    | { wasm?: OrtWasmFlags; env?: { wasm?: OrtWasmFlags } }
+    | undefined;
+  for (const wasm of [onnx?.wasm, onnx?.env?.wasm]) {
+    if (!wasm) continue;
     wasm.wasmPaths = wasmBaseUrl ?? ORT_WEB_CDN;
-    // The renderer is not cross-origin isolated (no COOP/COEP), so threaded WASM
-    // can't allocate SharedArrayBuffer — run single-threaded. `numThreads` is a
-    // valid ORT option not in the published typings, so set it via a narrow cast.
-    (wasm as { numThreads?: number }).numThreads = 1;
+    // Single-threaded: no pthread workers (which need Node's worker_threads), and
+    // the renderer can't share SharedArrayBuffer across threads cleanly anyway.
+    wasm.numThreads = 1;
+    // No proxy worker either — run the wasm inline on the main thread.
     wasm.proxy = false;
   }
   envConfigured = true;
