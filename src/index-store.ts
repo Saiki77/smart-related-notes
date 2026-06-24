@@ -828,8 +828,22 @@ export class IndexStore {
     // writeBinary requires a true ArrayBuffer; serializeIndex returns exactly that.
     await adapter.writeBinary(this.binTmpPath, blob);
     await adapter.write(this.jsonTmpPath, json);
-    await adapter.rename(this.binTmpPath, this.binPath);
-    await adapter.rename(this.jsonTmpPath, this.jsonPath);
+    // Swap the BLOB into place before the manifest. The complete new data already
+    // lives in the .tmp files; swapInto handles the fact that adapter.rename throws
+    // over an existing destination.
+    await this.swapInto(this.binTmpPath, this.binPath);
+    await this.swapInto(this.jsonTmpPath, this.jsonPath);
+  }
+
+  // Atomically replace `dest` with `tmp`. Obsidian's adapter.rename THROWS when the
+  // destination already exists ("Destination file already exists!"), so we remove
+  // it first. The new bytes are already fully written to `tmp`, so the only failure
+  // window is the brief remove→rename gap; load()'s header/totalBytes validation
+  // detects and self-heals any resulting skew into a clean rebuild.
+  private async swapInto(tmp: string, dest: string): Promise<void> {
+    const adapter = this.app.vault.adapter;
+    if (await adapter.exists(dest)) await adapter.remove(dest);
+    await adapter.rename(tmp, dest);
   }
 
   // MANIFEST-ONLY persist for a label-only change. The vectors did not move, so the
@@ -853,7 +867,7 @@ export class IndexStore {
       await adapter.mkdir(this.configDir);
     }
     await adapter.write(this.jsonTmpPath, json);
-    await adapter.rename(this.jsonTmpPath, this.jsonPath);
+    await this.swapInto(this.jsonTmpPath, this.jsonPath);
   }
 
   private firstDims(): number {
