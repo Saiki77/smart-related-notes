@@ -112,9 +112,10 @@ export default class RelatedNotesPlugin extends Plugin {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
 
     // Point onnxruntime-web at the plugin's self-hosted wasm folder so the .wasm
-    // matches the bundled glue exactly and the plugin works offline. If the path
-    // can't be resolved we leave the engine on its pinned-CDN fallback.
-    this.configureWasmPaths();
+    // matches the bundled glue exactly and the plugin works offline. If the folder
+    // didn't ship (BRAT/manual install) we leave the engine on its pinned-CDN
+    // fallback. Awaited so the base is set before the first embed.
+    await this.configureWasmPaths();
 
     this.engine = new EmbeddingEngine(this.settings.modelId, this.settings.device);
     this.appliedModelId = this.settings.modelId;
@@ -214,9 +215,16 @@ export default class RelatedNotesPlugin extends Plugin {
   // getResourcePath returns something like "app://<hash>/<abs>/ort/<file>?<mtime>";
   // we strip the query and the trailing filename to get the directory base. On any
   // failure the engine keeps its pinned-CDN fallback, so this never blocks load.
-  private configureWasmPaths(): void {
+  private async configureWasmPaths(): Promise<void> {
     try {
       const probe = normalizePath(`${this.pluginDir()}/${ORT_PROBE_FILE}`);
+      // Only self-host if the wasm actually shipped (the full related-notes.zip).
+      // BRAT / manual installs copy just main.js+manifest+styles, so there is no
+      // ort/ folder — getResourcePath would still return an app:// URL, but it
+      // 404s, wedging onnxruntime with ZERO providers ("Unsupported device: wasm.
+      // Should be one of: ."). When the file is absent we leave the base unset so
+      // the engine uses its version-pinned CDN fallback instead.
+      if (!(await this.app.vault.adapter.exists(probe))) return;
       const resource = this.app.vault.adapter.getResourcePath(probe);
       if (!resource) return;
       const noQuery = resource.split("?")[0];
