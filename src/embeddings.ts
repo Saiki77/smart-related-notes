@@ -39,16 +39,17 @@ export function setWasmBaseUrl(url: string): void {
   wasmBaseUrl = url.endsWith("/") ? url : `${url}/`;
 }
 
-// The onnxruntime-web wasm flags. ort reads these from ort.env.wasm. wasmPaths may
-// be a directory string OR a { mjs, wasm } map pointing the glue and binary at
-// distinct URLs.
+// The onnxruntime-web wasm flags. ort reads these from ort.env.wasm in the web
+// build, which transformers exposes as env.backends.onnx.env.wasm (NOT
+// env.backends.onnx.wasm — that's the Node-build shape). wasmPaths may be a
+// directory string OR a { mjs, wasm } map.
 interface OrtWasmFlags {
   wasmPaths?: string | { mjs?: string; wasm?: string };
   numThreads?: number;
   proxy?: boolean;
 }
 
-// Created lazily from the patched glue text, reused for the session.
+// Blob URL of the web-patched glue, created once and reused for the session.
 let glueBlobUrl: string | null = null;
 
 function configureEnv(): void {
@@ -56,14 +57,13 @@ function configureEnv(): void {
   env.allowRemoteModels = true;
   env.allowLocalModels = false;
   env.useBrowserCache = true;
-
-  // The .wasm comes from the self-hosted ort/ folder when present, else the
-  // version-pinned CDN. The GLUE (.mjs), however, is served from a Blob of our
-  // PATCHED copy (gen-ort forces its Node check off) so onnxruntime-web takes the
-  // pure-web path and never imports the Node-only 'worker_threads' — that import,
-  // triggered because Obsidian's renderer has process.versions.node set and
-  // process.type !== "renderer" (read-only, can't flip), was the "no available
-  // backend found" error. ort accepts wasmPaths = { mjs, wasm }.
+  // ort loads the JS GLUE from wasmPaths.mjs and the .wasm binary from
+  // wasmPaths.wasm. The bundled ort-web fetches the glue EXTERNALLY (it is not
+  // inlined), and the stock glue imports the Node-only 'worker_threads' on load
+  // (two separate Node checks) — which kills init in Obsidian's renderer with
+  // "no available backend found". So we serve our PATCHED glue (gen-ort forced
+  // both Node checks off) from a Blob, and point .wasm at the self-hosted ort/
+  // folder when present else the version-pinned CDN.
   const wasmDir = wasmBaseUrl ?? ORT_WEB_CDN;
   glueBlobUrl ??= URL.createObjectURL(
     new Blob([ORT_GLUE_JSEP], { type: "text/javascript" }),
@@ -72,10 +72,7 @@ function configureEnv(): void {
     mjs: glueBlobUrl,
     wasm: `${wasmDir}ort-wasm-simd-threaded.jsep.wasm`,
   };
-
-  // ort reads its flags from ort.env.wasm, which transformers exposes as
-  // env.backends.onnx.env.wasm in the WEB build (NOT env.backends.onnx.wasm —
-  // that's the Node-build shape). Set on BOTH so the right object is always hit.
+  // Set the flags on BOTH shapes so the object ort actually reads is always hit.
   const onnx = env.backends?.onnx as
     | { wasm?: OrtWasmFlags; env?: { wasm?: OrtWasmFlags } }
     | undefined;
