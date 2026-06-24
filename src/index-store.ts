@@ -6,13 +6,18 @@ import {
 } from "./embeddings";
 
 // =============================================================================
-// SCHEMA / version constant. Bumped 1 -> 2 for the multi-vector layout: each note
-// is now a mean vector PLUS a capped set of int8-quantized chunk vectors. Any
-// older (version 1) index — or any index written for a different model/dims, or a
-// different quantization/text-persistence policy — is detected as stale on load()
-// and a full rebuild is triggered. No silent half-migration.
+// SCHEMA / version constant. Bumped 1 -> 2 for the multi-vector layout (mean vector
+// PLUS a capped set of int8-quantized chunk vectors). Bumped 2 -> 3 for the keyphrase
+// summary LABEL: the per-note summary is now a tight 3–7-word topic label computed at
+// index time (KeyBERT-style: candidate phrases embedded and ranked by cosine to the
+// note mean, diversified with MMR) and PERSISTED on the entry — not a render-time
+// centroid-sentence pick. The label needs a model pass to compute, so it is produced
+// once during build and stored; a v2 index has no label field, so it is detected as
+// stale on load() and a full rebuild is triggered. Any index written for a different
+// model/dims, or a different quantization/text-persistence policy, is likewise
+// invalidated. No silent half-migration.
 // =============================================================================
-const INDEX_VERSION = 2 as const;
+const INDEX_VERSION = 3 as const;
 
 const STORE_FILE = "index.json";
 const BATCH_SIZE = 8;
@@ -49,15 +54,34 @@ const COARSE_FLOOR = 0.2;
 const W_DIRECT_LINK = 1.0;
 const W_SHARED_TAGS = 0.6;
 const W_BIBLIO = 0.5;
-const W_SAME_FOLDER = 0.15;
 const W_FRONTMATTER = 0.3;
 // The maximum raw weighted-signal sum (all signals firing fully). Used to scale the
 // raw sum into [0, B_MAX]; a fixed denominator keeps the boost interpretable.
+// (The same-folder signal was removed: in an atomic-note vault the whole library
+// lives in ~3 folders, so it fired for nearly every candidate — constant noise that
+// both inflated the boost indiscriminately and produced a near-useless pill. With it
+// gone the denominator is re-derived WITHOUT W_SAME_FOLDER so the remaining signals
+// keep their full [0,1] range.)
 const SIGNAL_NORM =
-  W_DIRECT_LINK + W_SHARED_TAGS + W_BIBLIO + W_SAME_FOLDER + W_FRONTMATTER;
+  W_DIRECT_LINK + W_SHARED_TAGS + W_BIBLIO + W_FRONTMATTER;
 
-// Centroid-summary length, truncated at a word boundary.
-const SUMMARY_CHARS = 140;
+// --- keyphrase summary LABEL knobs ------------------------------------------
+// Defensive char cap on the joined label (a real 3–7-word label is well under this).
+const SUMMARY_LABEL_CHARS = 64;
+// Max candidate n-gram phrase length (words). 1–3 covers "Theory of mind",
+// "Mitochondrium", "spanning tree" etc. without runaway phrases.
+const MAX_PHRASE_WORDS = 3;
+// Cap on candidates EMBEDDED per note. We keep the longest / most distinctive phrases
+// first. Every note's candidates in a build batch are flattened into ONE shared
+// embedBatch() pass (see computeSummaryLabels), so the aggregate label cost is one
+// extra ONNX pass per BATCH, not per note.
+const MAX_CANDIDATES = 36;
+// How many MMR picks to assemble into the final label, and the target word budget.
+const MAX_LABEL_PHRASES = 3;
+const TARGET_LABEL_WORDS_MIN = 3;
+const TARGET_LABEL_WORDS_MAX = 7;
+// MMR trade-off: lambda 0.6 is slightly relevance-biased (KeyBERT diversity ≈ 0.4).
+const MMR_LAMBDA = 0.6;
 
 // On-disk shape of one chunk block: a symmetric per-vector int8 quantization. The
 // `q` string is base64 of one Int8Array of length chunkCount*dims; `scales` holds
@@ -78,6 +102,7 @@ interface StoredEntry {
   meanVector: number[]; // fp32
   chunks: StoredChunkBlock; // int8-quantized chunk vectors
   chunkTexts?: string[]; // only persisted when summary feature is on
+  summaryLabel?: string; // KeyBERT-style topic label, computed at index time
 }
 
 // Header + body persisted to the plugin config dir. `version`/`modelId`/`dims`
@@ -103,6 +128,9 @@ interface IndexEntry {
   meanVector: Float32Array;
   chunks: Float32Array; // length == chunkCount * dims
   chunkTexts?: string[];
+  // The note's topic LABEL (3–7 words), computed once at index time from the note's
+  // own chunks (KeyBERT-style) and persisted. Present only when summaries are on.
+  summaryLabel?: string;
 }
 
 // Why a note was surfaced — derived in priority order from the structural signals
@@ -112,7 +140,6 @@ export type WhyKind =
   | "linked"
   | "shared-tags"
   | "co-cited"
-  | "same-folder"
   | "semantic";
 
 export interface WhyReason {
@@ -174,7 +201,6 @@ interface StructuralContext {
   linkTargets: Set<string>; // raw link labels (basename/path, lower-cased)
   ambiguousBasenames: Set<string>; // basenames shared by 2+ files (link-ambiguous)
   frontmatter: Record<string, unknown> | undefined;
-  folder: string;
 }
 
 // =============================================================================
@@ -449,8 +475,9 @@ export class IndexStore {
   // invalidated by mtime. Avoids re-tokenizing every candidate on every render.
   private wordCache = new Map<string, { mtime: number; words: Set<string> }>();
 
-  // Centroid-summary cache, keyed by mtime, computed lazily on first display and
-  // recomputed on re-embed. Off the hot rank() path entirely.
+  // Summary-label cache, keyed by mtime. The label itself is computed at INDEX time
+  // (it needs a model pass) and persisted on the entry; this cache just memoizes the
+  // synchronous lookup + truncation so the render hot path never recomputes.
   private summaryCache = new Map<string, { mtime: number; text: string }>();
 
   // Lower-cased basenames that occur on MORE THAN ONE file in the vault. A raw
@@ -565,6 +592,7 @@ export class IndexStore {
           meanVector: Float32Array.from(e.meanVector),
           chunks,
           chunkTexts: e.chunkTexts,
+          summaryLabel: e.summaryLabel,
         });
       }
       this.entries = loaded;
@@ -594,6 +622,7 @@ export class IndexStore {
         meanVector: Array.from(e.meanVector),
         chunks: quantizeChunks(e.chunks, e.chunkCount, e.dims),
         ...(keepText && e.chunkTexts ? { chunkTexts: e.chunkTexts } : {}),
+        ...(keepText && e.summaryLabel ? { summaryLabel: e.summaryLabel } : {}),
       })),
     };
     const adapter = this.app.vault.adapter;
@@ -741,6 +770,7 @@ export class IndexStore {
                 "query",
                 onProgress,
               );
+              const assembled: IndexEntry[] = [];
               for (let f = 0; f < pendingFiles.length; f++) {
                 const { file, chunks } = pendingFiles[f];
                 const start = offsets[f];
@@ -749,9 +779,13 @@ export class IndexStore {
                 if (entry) {
                   next.set(file.path, entry);
                   this.summaryCache.delete(file.path);
+                  assembled.push(entry);
                   embedded++;
                 }
               }
+              // One extra ONNX pass for the WHOLE batch's keyphrase labels (no-op when
+              // summaries are off), not one per note — keeps the build cost bounded.
+              await this.computeSummaryLabels(assembled);
             } catch (e) {
               if (!firstError) firstError = e;
               console.warn("[related-notes] batch embed failed", e);
@@ -802,7 +836,8 @@ export class IndexStore {
 
   // Regroup a slice [start, end) of the batch's flat vector list into one note's
   // contiguous chunk buffer + re-normalized mean. Returns null if the slice is
-  // empty or dims can't be determined.
+  // empty or dims can't be determined. The summaryLabel is filled separately by
+  // computeSummaryLabels() (it needs its own model pass), so it is left undefined here.
   private assembleEntry(
     file: TFile,
     chunks: NoteChunk[],
@@ -862,7 +897,11 @@ export class IndexStore {
         "query",
         onProgress,
       );
-      return this.assembleEntry(file, chunks, vectors, 0, vectors.length);
+      const entry = this.assembleEntry(file, chunks, vectors, 0, vectors.length);
+      // Single-note path: the batched labeller still does exactly one extra embed pass
+      // for this one note (or nothing when summaries are off).
+      if (entry) await this.computeSummaryLabels([entry]);
+      return entry;
     } catch (e) {
       console.warn(`[related-notes] failed to embed ${file.path}`, e);
       return null;
@@ -1084,7 +1123,6 @@ export class IndexStore {
       linkTargets,
       ambiguousBasenames: this.getAmbiguousBasenames(),
       frontmatter: cache?.frontmatter,
-      folder: active.parent?.path ?? "",
     };
   }
 
@@ -1135,9 +1173,6 @@ export class IndexStore {
     const minOut = Math.min(ctx.outlinks.size, otherOut.length);
     const biblio = minOut > 0 ? coShared / minOut : 0;
 
-    // Same folder.
-    const sameFolder = (file.parent?.path ?? "") === ctx.folder && ctx.folder !== "";
-
     // Shared frontmatter key/value pairs (excluding tags, handled above).
     const fmShared = sharedFrontmatter(ctx.frontmatter, cache?.frontmatter);
 
@@ -1145,17 +1180,15 @@ export class IndexStore {
       (directLink ? W_DIRECT_LINK : 0) +
       W_SHARED_TAGS * tagJaccard +
       W_BIBLIO * biblio +
-      (sameFolder ? W_SAME_FOLDER : 0) +
       W_FRONTMATTER * fmShared;
     const normRaw = SIGNAL_NORM > 0 ? Math.min(1, raw / SIGNAL_NORM) : 0;
 
-    // Why-reason, priority order: linked > shared-tags > co-cited > same-folder >
-    // semantic.
+    // Why-reason, priority order: linked > shared-tags > co-cited > semantic.
+    // (Same-folder was removed — meaningless in an atomic-note vault with ~3 folders.)
     let reason: WhyReason;
     if (directLink) reason = { kind: "linked" };
     else if (shared > 0) reason = { kind: "shared-tags", detail: topTag };
     else if (biblio > 0) reason = { kind: "co-cited" };
-    else if (sameFolder) reason = { kind: "same-folder" };
     else reason = { kind: "semantic" };
 
     return { raw: normRaw, directLink, reason };
@@ -1210,38 +1243,95 @@ export class IndexStore {
     return words;
   }
 
-  // --- centroid summary ------------------------------------------------------
-  // One representative line per note: the BODY chunk whose vector is closest to the
-  // note's mean (the centroid), truncated at a word boundary. Reuses already-
-  // computed vectors — no extra model call. Cached by mtime; returns "" when the
-  // note isn't indexed or has no persisted chunk text (caller falls back to the
-  // snippet).
+  // --- keyphrase summary label ----------------------------------------------
+  // Synchronous, render-hot-path-safe: just returns the PERSISTED topic label for the
+  // note (computed once at index time by computeSummaryLabels below). Cached by mtime
+  // only to memoize the defensive truncation. Returns "" when the note isn't indexed
+  // or has no label yet (caller falls back to the snippet).
   getSummary(file: TFile): string {
     const cached = this.summaryCache.get(file.path);
     if (cached && cached.mtime === file.stat.mtime) return cached.text;
 
     const entry = this.entries.get(file.path);
-    if (!entry || !entry.chunkTexts || entry.chunkTexts.length === 0) return "";
+    const label = entry?.summaryLabel;
+    if (!label || label.length === 0) return "";
 
-    const { dims, chunkCount, meanVector, chunks, chunkTexts } = entry;
-    // Single-chunk (title only, or title+one body) -> use the body chunk if present.
-    let bestIdx = -1;
-    let bestSim = -Infinity;
-    for (let c = 0; c < chunkCount; c++) {
-      if (c === TITLE_CHUNK_INDEX) continue; // skip the title
-      const off = c * dims;
-      let dot = 0;
-      for (let d = 0; d < dims; d++) dot += meanVector[d] * chunks[off + d];
-      if (dot > bestSim) {
-        bestSim = dot;
-        bestIdx = c;
-      }
-    }
-    if (bestIdx < 0 || bestIdx >= chunkTexts.length) return "";
-
-    const text = truncateAtWord(chunkTexts[bestIdx], SUMMARY_CHARS);
+    const text = truncateAtWord(label, SUMMARY_LABEL_CHARS);
     this.summaryCache.set(file.path, { mtime: file.stat.mtime, text });
     return text;
+  }
+
+  // Compute tight 3–7-word TOPIC LABELS for a whole batch of freshly-assembled entries
+  // in ONE embedBatch() pass, storing each label on its entry (so persist() writes it).
+  // KeyBERT-style and fully offline: it reuses the SAME embedding engine — no second
+  // model, no extra download. Pipeline, per entry:
+  //   1) source text = the note's own persisted chunk texts (already markdown-cleaned)
+  //   2) generate 1–3-gram candidate phrases (multilingual DE+EN stopword filtered)
+  // …then ACROSS the batch:
+  //   3) flatten every entry's candidate surfaces into one engine.embedBatch() pass
+  //      (an offsets table regroups the result per entry — exactly like assembleEntry
+  //      does for chunk vectors), so N notes cost ONE extra ONNX pass, not N
+  //   4) per entry: relevance(c) = cosine(candidateVec, entry.meanVector)
+  //   5) MMR (lambda 0.6) picks 2–3 diverse, relevant phrases
+  //   6) assemble into a label landing in the 3–7-word budget; fall back to basename.
+  // Runs ONLY at index/build time (never on rank() or render). On any failure or a
+  // too-short note it leaves a basename fallback so a card never shows a blank line.
+  private async computeSummaryLabels(entries: IndexEntry[]): Promise<void> {
+    if (!this.options.showSummary || entries.length === 0) return;
+
+    // Phase 1: per-entry candidate generation (CPU only, no model). Entries with no
+    // usable text/candidates get their basename fallback now and are dropped from the
+    // embed batch; the rest contribute a flattened slice of candidate surfaces.
+    const pending: { entry: IndexEntry; candidates: Candidate[] }[] = [];
+    const allSurfaces: string[] = [];
+    const offsets: number[] = [0];
+    for (const entry of entries) {
+      const basename = baseNameFromPath(entry.path);
+      const texts = entry.chunkTexts;
+      // No persisted text (empty note): label = title.
+      if (!texts || texts.length === 0) {
+        entry.summaryLabel = basename;
+        continue;
+      }
+      // Candidate phrases from the body chunks (skip the title chunk as a source — the
+      // title is the fallback, and including it would just echo the basename).
+      const source = texts.filter((_, i) => i !== TITLE_CHUNK_INDEX).join("\n");
+      const candidates = generateCandidates(source);
+      if (candidates.length === 0) {
+        entry.summaryLabel = basename;
+        continue;
+      }
+      pending.push({ entry, candidates });
+      for (const c of candidates) allSurfaces.push(c.surface);
+      offsets.push(allSurfaces.length);
+    }
+
+    if (pending.length === 0) return;
+
+    // Phase 2: ONE embed pass over every candidate in the batch (prefix-free for the
+    // paraphrase model; "passage" is a no-op there but keeps intent explicit). If the
+    // pass throws or its length is wrong, every pending entry falls back to its
+    // basename — a label is never left undefined.
+    let vecs: Float32Array[];
+    try {
+      vecs = await this.engine.embedBatch(allSurfaces, "passage");
+    } catch (e) {
+      console.warn("[related-notes] keyphrase label batch failed", e);
+      for (const { entry } of pending) entry.summaryLabel = baseNameFromPath(entry.path);
+      return;
+    }
+    if (vecs.length !== allSurfaces.length) {
+      for (const { entry } of pending) entry.summaryLabel = baseNameFromPath(entry.path);
+      return;
+    }
+
+    // Phase 3: regroup the flat vector list per entry and select each label (CPU only).
+    for (let p = 0; p < pending.length; p++) {
+      const { entry, candidates } = pending[p];
+      const slice = vecs.slice(offsets[p], offsets[p + 1]);
+      const label = selectLabel(candidates, slice, entry.meanVector);
+      entry.summaryLabel = label.length > 0 ? label : baseNameFromPath(entry.path);
+    }
   }
 }
 
@@ -1308,4 +1398,265 @@ function truncateAtWord(text: string, max: number): string {
   const lastSpace = slice.lastIndexOf(" ");
   const cut = lastSpace > max * 0.6 ? slice.slice(0, lastSpace) : slice;
   return `${cut.trimEnd()}…`;
+}
+
+// Basename (no directory, no .md) from a vault path. Used as the always-available
+// label fallback for too-short notes, mirroring the view's existing basename fallback.
+function baseNameFromPath(path: string): string {
+  const slash = path.lastIndexOf("/");
+  const name = slash >= 0 ? path.slice(slash + 1) : path;
+  return name.replace(/\.md$/i, "");
+}
+
+// =============================================================================
+// KeyBERT-style keyphrase labelling (module-scope, no model state)
+// =============================================================================
+
+// A candidate phrase: its original-cased SURFACE form (shown to the user), a
+// lower-cased KEY for dedupe, the WORDS count, and the index of its first occurrence
+// in the source (for left-to-right ordering of the final label).
+interface Candidate {
+  surface: string;
+  key: string;
+  words: number;
+  pos: number;
+}
+
+// Inlined multilingual (German + English) stopword set. A candidate is dropped when
+// its FIRST or LAST token is a stopword — interior stopwords are kept ("theory of
+// mind", "Gesetz der großen Zahlen"). No dependency: a hardcoded Set is enough.
+const STOPWORDS = new Set<string>([
+  // --- English function words ---
+  "the", "a", "an", "and", "or", "but", "nor", "so", "yet", "of", "to", "in",
+  "on", "at", "by", "for", "with", "about", "against", "between", "into",
+  "through", "during", "before", "after", "above", "below", "from", "up",
+  "down", "out", "off", "over", "under", "again", "further", "then", "once",
+  "here", "there", "when", "where", "why", "how", "all", "any", "both", "each",
+  "few", "more", "most", "other", "some", "such", "no", "not", "only", "own",
+  "same", "than", "too", "very", "can", "will", "just", "should", "now", "is",
+  "are", "was", "were", "be", "been", "being", "am", "has", "have", "had",
+  "having", "do", "does", "did", "doing", "would", "could", "shall", "may",
+  "might", "must", "this", "that", "these", "those", "it", "its", "he", "she",
+  "they", "them", "his", "her", "their", "our", "your", "my", "we", "you", "i",
+  "as", "if", "because", "while", "which", "who", "whom", "what", "also", "via",
+  "etc", "e", "g", "ie", "vs", "per", "using", "use", "used", "one", "two",
+  // --- German function words ---
+  "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem",
+  "einer", "eines", "und", "oder", "aber", "doch", "sondern", "denn", "weil",
+  "dass", "ob", "wenn", "als", "wie", "wo", "warum", "weshalb", "ist", "sind",
+  "war", "waren", "sein", "bin", "bist", "seid", "hat", "haben", "hatte",
+  "hatten", "wird", "werden", "wurde", "wurden", "worden", "kann", "können",
+  "muss", "müssen", "soll", "sollen", "darf", "dürfen", "mag", "möchte", "zu",
+  "von", "mit", "bei", "nach", "aus", "auf", "für", "an", "am", "im", "in",
+  "ins", "um", "über", "unter", "vor", "hinter", "neben", "zwischen", "durch",
+  "gegen", "ohne", "bis", "seit", "während", "wegen", "trotz", "nicht", "kein",
+  "keine", "keinen", "auch", "nur", "noch", "schon", "sehr", "mehr", "viel",
+  "viele", "alle", "alles", "man", "es", "er", "sie", "wir", "ihr", "ich",
+  "du", "mich", "dich", "sich", "uns", "euch", "ihm", "ihn", "ihnen", "mein",
+  "dein", "sein", "unser", "euer", "dieser", "diese", "dieses", "diesem",
+  "diesen", "jener", "jene", "welche", "welcher", "welches", "etwa", "also",
+  "dann", "hier", "dort", "da", "so", "zum", "zur", "beim", "vom", "ja", "nein",
+]);
+
+// True for a token that should never anchor (start/end) a candidate phrase: a
+// stopword, a pure-number, or a too-short fragment (<=2 chars, mirroring the existing
+// significantWords filter). Comparison is on the lower-cased form.
+function isWeakAnchor(tokenLower: string): boolean {
+  if (tokenLower.length <= 2) return true;
+  if (/^\p{N}+$/u.test(tokenLower)) return true;
+  return STOPWORDS.has(tokenLower);
+}
+
+// One token of the source, carrying its surface form, lower-cased form, and whether
+// it looks like a German content noun (mid-sentence Capitalized word — a cheap,
+// tagger-free topic signal that we never stopword-filter and slightly prefer).
+interface Token {
+  surface: string;
+  lower: string;
+  contentNoun: boolean;
+}
+
+// Tokenize one sentence into Tokens, flagging mid-sentence Capitalized words (likely
+// German nouns / proper nouns) — the first token of a sentence is excluded from that
+// flag since sentence-initial capitalization is not a noun signal.
+function tokenizeSentence(sentence: string): Token[] {
+  const raw = sentence.split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 0);
+  return raw.map((w, i) => {
+    const first = w[0] ?? "";
+    const capitalized = first !== first.toLowerCase() && i > 0;
+    return { surface: w, lower: w.toLowerCase(), contentNoun: capitalized };
+  });
+}
+
+// Generate deduped 1–3-gram candidate phrases from cleaned source text. Phrases never
+// cross a sentence boundary; their first/last token must be a strong anchor (not a
+// stopword / number / tiny fragment); interior stopwords are allowed. Candidates are
+// capped to MAX_CANDIDATES, preferring longer phrases and ones containing a likely
+// content noun (the German-noun signal) so the cheap embed pass spends its budget on
+// the most topical spans. Surface casing of the FIRST occurrence is preserved.
+function generateCandidates(source: string): Candidate[] {
+  const byKey = new Map<string, Candidate & { nounScore: number }>();
+  let globalPos = 0;
+
+  const sentences = splitSentences(source);
+  for (const sentence of sentences) {
+    const tokens = tokenizeSentence(sentence);
+    for (let i = 0; i < tokens.length; i++) {
+      // Skip starting a phrase on a weak anchor.
+      if (isWeakAnchor(tokens[i].lower)) {
+        globalPos++;
+        continue;
+      }
+      for (let n = 1; n <= MAX_PHRASE_WORDS && i + n <= tokens.length; n++) {
+        const span = tokens.slice(i, i + n);
+        const last = span[span.length - 1];
+        // Last token must also be a strong anchor.
+        if (isWeakAnchor(last.lower)) continue;
+        const surface = span.map((t) => t.surface).join(" ");
+        const key = span.map((t) => t.lower).join(" ");
+        if (byKey.has(key)) continue;
+        const nounScore = span.reduce((s, t) => s + (t.contentNoun ? 1 : 0), 0);
+        byKey.set(key, {
+          surface,
+          key,
+          words: n,
+          pos: globalPos,
+          nounScore,
+        });
+      }
+      globalPos++;
+    }
+  }
+
+  const all = Array.from(byKey.values());
+  // Prefer phrases that look topical first: more content nouns, then longer, then
+  // earlier — then cap so the embed pass stays one cheap call.
+  all.sort(
+    (a, b) =>
+      b.nounScore - a.nounScore || b.words - a.words || a.pos - b.pos,
+  );
+  return all.slice(0, MAX_CANDIDATES).map((c) => ({
+    surface: c.surface,
+    key: c.key,
+    words: c.words,
+    pos: c.pos,
+  }));
+}
+
+// Rank candidates by cosine to the note mean (the KeyBERT document anchor), pick
+// 2–3 diverse phrases with MMR, then assemble them into a tight label. The final
+// word count is held inside [TARGET_LABEL_WORDS_MIN, TARGET_LABEL_WORDS_MAX]: the
+// assembly skips any phrase that would overflow the max (three trigrams cap at 6,
+// not 9), and tops a collapsed-to-one-word pick back up toward the min from the
+// most-relevant remaining phrases — though a genuinely single-topic note may still
+// land on a tight 1-word label. `meanVector` and each candidate vector are already
+// L2-normalized, so cosine is a dot product (reuse cosineSimilarity). Returns ""
+// only when nothing survives.
+function selectLabel(
+  candidates: Candidate[],
+  vecs: Float32Array[],
+  meanVector: Float32Array,
+): string {
+  const n = candidates.length;
+  if (n === 0) return "";
+
+  const relevance = new Array<number>(n);
+  for (let i = 0; i < n; i++) {
+    relevance[i] = cosineSimilarity(vecs[i], meanVector);
+  }
+
+  // MMR selection: first pick = argmax relevance; each next pick maximizes
+  // lambda*relevance - (1-lambda)*max similarity to anything already picked.
+  const selected: number[] = [];
+  const remaining = new Set<number>();
+  for (let i = 0; i < n; i++) remaining.add(i);
+
+  while (selected.length < MAX_LABEL_PHRASES && remaining.size > 0) {
+    let bestIdx = -1;
+    let bestScore = -Infinity;
+    for (const i of remaining) {
+      let redundancy = 0;
+      for (const s of selected) {
+        const sim = cosineSimilarity(vecs[i], vecs[s]);
+        if (sim > redundancy) redundancy = sim;
+      }
+      const mmr =
+        selected.length === 0
+          ? relevance[i]
+          : MMR_LAMBDA * relevance[i] - (1 - MMR_LAMBDA) * redundancy;
+      if (mmr > bestScore) {
+        bestScore = mmr;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx < 0) break;
+    selected.push(bestIdx);
+    remaining.delete(bestIdx);
+
+    // Stop early once the assembled label already covers the word budget so we don't
+    // pad a clean multi-word phrase with extra unigrams.
+    const wordsSoFar = selected.reduce((w, i) => w + candidates[i].words, 0);
+    if (wordsSoFar >= TARGET_LABEL_WORDS_MIN && candidates[bestIdx].words >= 2) {
+      if (wordsSoFar >= TARGET_LABEL_WORDS_MAX) break;
+    }
+  }
+
+  if (selected.length === 0) return "";
+
+  // Drop a pick whose words are wholly contained (as a contiguous run) in an already-
+  // kept pick, keeping the longer phrase. Compared on whitespace-padded keys so the
+  // match is on whole words, never a mid-word substring ("art" ⊄ "smart"). The
+  // subsumption test is reused below when topping the label back up.
+  const subsumedBy = (i: number, against: number[]): boolean => {
+    const ki = ` ${candidates[i].key} `;
+    return against.some((j) => {
+      const kj = ` ${candidates[j].key} `;
+      return kj.includes(ki) || ki.includes(kj);
+    });
+  };
+  const kept: number[] = [];
+  for (const i of selected) {
+    if (!subsumedBy(i, kept)) kept.push(i);
+  }
+
+  // The collapse can leave a single short pick (all MMR picks folded into one unigram).
+  // If the kept words fall below the floor, append the most-relevant remaining
+  // non-subsumed candidate(s) so the label reaches TARGET_LABEL_WORDS_MIN where the
+  // note has the material for it. (A genuinely one-topic note may still end at 1 word —
+  // that is an acceptable tight label, not a bug.)
+  let keptWords = kept.reduce((w, i) => w + candidates[i].words, 0);
+  if (keptWords < TARGET_LABEL_WORDS_MIN) {
+    const order = Array.from({ length: candidates.length }, (_, i) => i)
+      .filter((i) => !kept.includes(i))
+      .sort((a, b) => relevance[b] - relevance[a]);
+    for (const i of order) {
+      if (keptWords >= TARGET_LABEL_WORDS_MIN) break;
+      if (keptWords + candidates[i].words > TARGET_LABEL_WORDS_MAX) continue;
+      if (subsumedBy(i, kept)) continue;
+      kept.push(i);
+      keptWords += candidates[i].words;
+    }
+  }
+
+  // Order left-to-right by original position, then assemble, never letting the running
+  // word count exceed the budget: PEEK each phrase's length and skip one that would
+  // push past TARGET_LABEL_WORDS_MAX (so e.g. three trigrams cap at 6 words, not 9).
+  kept.sort((a, b) => candidates[a].pos - candidates[b].pos);
+  const parts: string[] = [];
+  let words = 0;
+  for (const i of kept) {
+    if (words >= TARGET_LABEL_WORDS_MAX) break;
+    if (words + candidates[i].words > TARGET_LABEL_WORDS_MAX) continue;
+    parts.push(candidates[i].surface);
+    words += candidates[i].words;
+  }
+  // Guard: if every kept phrase was longer than the whole budget (a lone >7-word
+  // phrase can't happen given MAX_PHRASE_WORDS=3, but be defensive), keep the first.
+  if (parts.length === 0 && kept.length > 0) {
+    parts.push(candidates[kept[0]].surface);
+  }
+  // Single multi-word phrase reads as a phrase; multiple disjoint picks read better
+  // separated with a middot so they aren't misread as one run-on phrase.
+  const label = parts.length <= 1 ? parts.join(" ") : parts.join(" · ");
+  return label.trim();
 }

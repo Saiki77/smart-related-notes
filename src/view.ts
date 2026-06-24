@@ -179,7 +179,7 @@ export class RelatedNotesView extends ItemView {
       card.createDiv({ cls: "rn-path", text: parentPath });
     }
 
-    // Centroid summary line (preferred) with the snippet as a graceful fallback.
+    // Topic-label summary line (preferred) with the snippet as a graceful fallback.
     if (this.plugin.settings.showSummary) {
       const summary = this.plugin.store.getSummary(item.file);
       const line = summary.length > 0 ? summary : this.plugin.getSnippet(item.file);
@@ -212,8 +212,6 @@ export class RelatedNotesView extends ItemView {
         return reason.detail ? `#${reason.detail}` : "Shared tags";
       case "co-cited":
         return "Co-cited";
-      case "same-folder":
-        return "Same folder";
       case "semantic":
         return "Similar text";
       default:

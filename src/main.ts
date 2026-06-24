@@ -37,7 +37,7 @@ export interface RelatedNotesSettings {
   // --- multi-vector / ranking ---
   chunking: boolean; // master toggle for the chunk-level path
   structureInfluence: number; // B_MAX for the hybrid structural boost (0..0.3)
-  showSummary: boolean; // centroid-sentence line (supersedes snippet when on)
+  showSummary: boolean; // keyphrase topic-label line (supersedes snippet when on)
   showRecency: boolean; // muted "edited Nd ago" line
   maxChunks: number; // body-chunk cap (advanced)
   shortlistSize: number; // Stage-1 -> Stage-2 funnel width (advanced)
@@ -596,7 +596,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Show summary line")
       .setDesc(
-        "Show the note's most representative sentence on each card (computed locally from its own chunks — no extra model). Falls back to a plain preview when off. Toggling this rebuilds the index so the summary text is available.",
+        "Show a concise 3–7-word topic label on each card (extracted locally from the note's own chunks — no extra model or download). Falls back to a plain preview when off. Toggling this rebuilds the index so the labels are available, and a full rebuild takes a little longer with labels on.",
       )
       .addToggle((t) =>
         t.setValue(this.plugin.settings.showSummary).onChange(async (v) => {
@@ -631,7 +631,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       const setting = new Setting(containerEl)
         .setName("Structure influence")
         .setDesc(
-          "How much shared tags, links, and folders nudge the ranking. Bounded so it only re-orders near-ties and never promotes an unrelated note. 0 disables it.",
+          "How much shared tags, links, co-citations, and frontmatter nudge the ranking. Bounded so it only re-orders near-ties and never promotes an unrelated note. 0 disables it.",
         );
       const fmt = (v: number) => v.toFixed(2);
       const valueEl = setting.controlEl.createSpan({

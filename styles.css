@@ -150,7 +150,7 @@
   background-color: var(--interactive-accent);
 }
 
-/* Why-related reason (top shared tag, "Co-cited", "Same folder", "Similar text"). */
+/* Why-related reason (top shared tag, "Co-cited", "Similar text"). */
 .related-notes-view .rn-why {
   font-size: var(--font-ui-smaller);
   line-height: 1;
