@@ -34,6 +34,12 @@ function resolveOrtDir() {
 }
 
 const ortDir = resolveOrtDir();
+// This version tracks the onnxruntime-web that @huggingface/transformers actually
+// bundles — which is frequently a -dev snapshot (e.g. 1.22.0-dev.2025...). Do NOT
+// pin it to a stable release independently: the self-hosted app:// primary .wasm
+// and the JS glue transformers bundled must be the exact same build or ORT init
+// fails ("create of undefined" / wasm-glue mismatch). The CDN fallback URL below
+// is derived from this same version, so it can't drift either.
 const ortVersion = JSON.parse(
   readFileSync(join(ortDir, "package.json"), "utf8"),
 ).version;

@@ -37,7 +37,7 @@ export class RelatedNotesView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "Related notes";
+    return "Smart related notes";
   }
 
   getIcon(): string {
@@ -51,7 +51,7 @@ export class RelatedNotesView extends ItemView {
 
     const header = root.createDiv({ cls: "rn-header" });
     const titleRow = header.createDiv({ cls: "rn-title-row" });
-    titleRow.createDiv({ cls: "rn-heading", text: "Related notes" });
+    titleRow.createDiv({ cls: "rn-heading", text: "Smart related notes" });
     const refresh = titleRow.createDiv({
       cls: "rn-refresh clickable-icon",
       attr: { "aria-label": "Rebuild the index" },

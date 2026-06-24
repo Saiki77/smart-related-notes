@@ -1,9 +1,9 @@
 {
   "id": "related-notes",
-  "name": "Related Notes",
-  "version": "1.0.1",
+  "name": "Smart Related Notes",
+  "version": "1.1.0",
   "minAppVersion": "1.7.2",
-  "description": "Surface notes ranked by local semantic similarity to the one you're reading, as a left-sidebar card stack you can browse by relevance.",
+  "description": "Surface notes most semantically similar to the one you're reading in a left-sidebar panel, powered by a small multilingual embedding model that runs entirely on your machine. Private and offline.",
   "author": "Saiki77",
   "authorUrl": "https://github.com/Saiki77",
   "isDesktopOnly": true

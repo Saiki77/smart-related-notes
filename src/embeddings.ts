@@ -6,15 +6,16 @@ import {
 import { ORT_WEB_CDN } from "./ort-version";
 
 // --- transformers.js environment ---------------------------------------------
-// Force the WEB/WASM resolution path inside the Electron renderer. transformers.js
-// otherwise detects the renderer as Node (apis.IS_NODE_ENV === true) and takes the
-// filesystem/return_path code path, which throws "Unable to return path for
-// response" in Obsidian. Setting these BEFORE the first pipeline() call avoids it.
+// The onnxruntime-WEB backend is forced in ort-shim.ts (imported first in
+// main.ts), which installs our bundled ort-web under Symbol.for("onnxruntime")
+// before transformers loads. That makes InferenceSession defined and rebuilds the
+// device list as [webgpu?, wasm] — the renderer no longer misdetects as Node and
+// no longer dead-ends on the invalid "cpu" device. Here we only configure env
+// (cache + wasm source) before the first pipeline() call.
 //   - allowRemoteModels: pull weights from the HF Hub (no model files shipped).
 //   - allowLocalModels:  off, so the Node FS/getModelFile path is never taken.
 //   - useBrowserCache:   cache weights in the browser Cache API (persists, works
 //                        in the renderer) so the model downloads exactly once.
-//   - useFSCache:        off — the Node disk cache is the source of the bug above.
 //   - wasm.wasmPaths:    where the onnxruntime-web .wasm is fetched from. We point
 //                        this at the plugin's SELF-HOSTED ort/ folder (passed in as
 //                        an app:// resource URL) so the .wasm is the exact build
@@ -43,9 +44,9 @@ function configureEnv(): void {
   env.allowRemoteModels = true;
   env.allowLocalModels = false;
   env.useBrowserCache = true;
-  env.useFSCache = false;
-  // `env.backends.onnx.wasm` is typed optional; it is always present at runtime,
-  // but guard the access so the build stays strict-null clean.
+  // `env.backends.onnx.wasm` is typed optional; it is always present at runtime
+  // (it's the web runtime now), but guard the access so the build stays
+  // strict-null clean.
   const wasm = env.backends?.onnx?.wasm;
   if (wasm) {
     wasm.wasmPaths = wasmBaseUrl ?? ORT_WEB_CDN;
@@ -58,8 +59,11 @@ function configureEnv(): void {
   envConfigured = true;
 }
 
-// Device preference for the inference backend.
-export type DevicePref = "auto" | "webgpu" | "wasm" | "cpu";
+// Device preference for the inference backend. The onnxruntime-web backend only
+// supports "webgpu" (when navigator.gpu is present) and "wasm" — there is NO
+// "cpu" provider in the web runtime ("wasm" IS the CPU path). "auto" probes
+// WebGPU and falls back to WASM.
+export type DevicePref = "auto" | "webgpu" | "wasm";
 
 // Progress events surfaced from pipeline() during the one-time model download.
 // transformers.js types this as `any`; narrow it to just the fields we read.
@@ -90,7 +94,7 @@ export class EmbeddingEngine {
   readonly modelId: string;
   readonly devicePref: DevicePref;
   private pipePromise: Promise<FeatureExtractionPipeline> | null = null;
-  private resolvedDevice: "webgpu" | "wasm" | "cpu" | null = null;
+  private resolvedDevice: "webgpu" | "wasm" | null = null;
 
   constructor(modelId: string, devicePref: DevicePref) {
     this.modelId = modelId;
@@ -98,7 +102,7 @@ export class EmbeddingEngine {
   }
 
   // The device the pipeline actually initialised on, once init() has resolved.
-  get device(): "webgpu" | "wasm" | "cpu" | null {
+  get device(): "webgpu" | "wasm" | null {
     return this.resolvedDevice;
   }
 
@@ -118,48 +122,42 @@ export class EmbeddingEngine {
   }
 
   // Lazily build the pipeline. Safe to call repeatedly: the first call wins and
-  // every later caller awaits the same promise. WebGPU is tried first (unless the
-  // user pinned a device), with a WASM fallback in a try/catch. If WASM itself
-  // also fails (CDN blocked, offline first-run, wasm/glue mismatch) the rejected
-  // promise propagates to the caller, which surfaces a Notice — the failure is
-  // never swallowed into a silent keyword-only mode.
+  // every later caller awaits the same promise. WebGPU is tried first (only when a
+  // real adapter is available), with a WASM fallback. If WASM itself also fails
+  // (CDN blocked, offline first-run, wasm/glue mismatch) the rejected promise
+  // propagates to the caller, which surfaces a Notice — the failure is never
+  // swallowed into a silent keyword-only mode.
   init(onProgress?: ProgressCallback): Promise<FeatureExtractionPipeline> {
     if (this.pipePromise) return this.pipePromise;
     configureEnv();
 
     this.pipePromise = (async () => {
-      const build = (device: "webgpu" | "wasm" | "cpu") => {
+      const build = (device: "webgpu" | "wasm") => {
         this.resolvedDevice = device;
         return pipeline("feature-extraction", this.modelId, {
           device,
-          // q8 keeps the download small and fast on CPU/WASM; fp32 is the WebGPU
-          // default (accuracy over a slightly larger download).
+          // q8 keeps the WASM download small and fast; fp32 is the WebGPU default
+          // (accuracy over a slightly larger download).
           dtype: device === "webgpu" ? "fp32" : "q8",
           progress_callback: onProgress,
         });
       };
 
-      // Desktop Obsidian is Electron, so transformers.js loads onnxruntime-NODE,
-      // whose only execution provider is "cpu" — "webgpu"/"wasm" THROW there
-      // (that's the "Unsupported device" error). Under Node we therefore go
-      // straight to native CPU (fast); only a pure-web context (no Node) gets the
-      // WebGPU→WASM path. Every order ends in "cpu" so init can't dead-end.
-      const isNode =
-        typeof process !== "undefined" && !!process.versions?.node;
-
-      let order: Array<"webgpu" | "wasm" | "cpu">;
-      if (this.devicePref === "cpu") {
-        order = ["cpu"];
-      } else if (this.devicePref === "wasm") {
-        order = ["wasm", "cpu"];
+      // The web runtime supports exactly "webgpu" (when an adapter exists) and
+      // "wasm". Every order ends in "wasm" — the always-available CPU path — so
+      // init can never dead-end on an invalid device.
+      let order: Array<"webgpu" | "wasm">;
+      if (this.devicePref === "wasm") {
+        order = ["wasm"];
       } else if (this.devicePref === "webgpu") {
-        order = ["webgpu", "cpu"];
-      } else if (isNode) {
-        order = ["cpu"];
+        // Honour the explicit pin, but still fall back to wasm if the adapter or
+        // the webgpu session fails to come up.
+        order = ["webgpu", "wasm"];
       } else {
+        // "auto": only try WebGPU when a real adapter is present, else wasm.
         order = (await EmbeddingEngine.webgpuAvailable())
-          ? ["webgpu", "wasm", "cpu"]
-          : ["wasm", "cpu"];
+          ? ["webgpu", "wasm"]
+          : ["wasm"];
       }
 
       let lastErr: unknown;

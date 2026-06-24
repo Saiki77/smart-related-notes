@@ -1,3 +1,8 @@
+// MUST be first: installs our bundled onnxruntime-web under
+// Symbol.for("onnxruntime") BEFORE @huggingface/transformers is pulled in (via
+// ./embeddings below), so the renderer uses the web runtime instead of the
+// externalized, undefined onnxruntime-node. See ort-shim.ts for the full why.
+import "./ort-shim";
 import {
   Plugin,
   PluginSettingTab,
@@ -123,7 +128,7 @@ export default class RelatedNotesPlugin extends Plugin {
 
     this.registerView(VIEW_TYPE_RELATED, (leaf) => new RelatedNotesView(leaf, this));
 
-    this.addRibbonIcon("sparkles", "Related notes", () => {
+    this.addRibbonIcon("sparkles", "Smart related notes", () => {
       void this.activateView();
     });
 
@@ -402,7 +407,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Model")
       .setDesc(
-        "The embedding model. multilingual-e5-small gives the best German + English quality. Weights download once (~110 MB) and are cached.",
+        "The embedding model. multilingual-e5-small gives the best German + English quality. Weights download once and are cached (~110 MB for the quantized WASM build; larger for the fp32 build WebGPU uses).",
       )
       .addDropdown((d) => {
         for (const [id, label] of Object.entries(MODEL_OPTIONS)) d.addOption(id, label);
@@ -419,14 +424,13 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Compute device")
       .setDesc(
-        "On desktop, Obsidian runs native CPU embedding (fast) and Auto picks it automatically. WebGPU/WASM only apply in a pure-web context and fall back to CPU here.",
+        "Auto uses your GPU (WebGPU) when available and falls back to WASM (CPU) otherwise. WASM always works and needs no GPU.",
       )
       .addDropdown((d) =>
         d
           .addOption("auto", "Auto (recommended)")
-          .addOption("cpu", "CPU (native)")
-          .addOption("webgpu", "WebGPU")
-          .addOption("wasm", "WASM")
+          .addOption("webgpu", "WebGPU (GPU)")
+          .addOption("wasm", "WASM (CPU)")
           .setValue(this.plugin.settings.device)
           .onChange(async (v) => {
             this.plugin.settings.device = v as DevicePref;

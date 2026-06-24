@@ -1,60 +1,123 @@
-# Related Notes
+# Smart Related Notes
 
-A left-sidebar card stack of notes ranked by **local semantic-embedding similarity** to the note you're reading. Browse your vault by relevance instead of folders.
+A left-sidebar panel that surfaces the notes most **semantically similar** to the
+one you're reading — so you browse your vault by meaning, not by folders. Open any
+note and the panel ranks the rest by how closely they relate, as a stack of cards
+you can click to jump to.
 
-Everything runs locally: a small multilingual embedding model (German + English and 100+ other languages) runs in your machine's GPU (WebGPU) or CPU (WASM). The ONNX runtime (`.wasm`) is **shipped inside the plugin**, so the only network traffic is the **one-time** download of the model weights from the Hugging Face Hub; after that the model is cached and the plugin works fully offline.
-
-## What it does
-
-- Adds a **Related notes** view to the **left sidebar** (ribbon icon + command).
-- Embeds every Markdown note (title + the first ~1500 characters of cleaned body text) into a 384-dimensional vector.
-- For the active note, ranks all others by cosine similarity and shows the top matches as cards: **title**, muted **folder path**, a short **snippet**, and a **similarity %** pill.
-- Click a card to open that note.
-- Updates (debounced) when you switch notes, and re-embeds changed/created/renamed notes incrementally.
-- While the index is still building, it falls back to a cheap keyword / tag / link-overlap ranking (shown with a `~` pill) so the panel is never empty.
+It's powered by a small **multilingual embedding model that runs entirely on your
+machine** — no cloud, no API key, no second app or server. Everything happens
+locally inside the renderer, so your notes never leave your computer. After a
+**one-time** model download (cached on first use), it works **fully offline**. The
+model understands German, English, and 100+ other languages, so matches cross
+languages naturally.
 
 ## How it works
 
-| Piece | Detail |
-| --- | --- |
-| Model | `Xenova/multilingual-e5-small` (default) — best German + English quality at a small size. Alternative: `Xenova/paraphrase-multilingual-MiniLM-L12-v2` (no query/passage prefix needed). |
-| Engine | [`@huggingface/transformers`](https://www.npmjs.com/package/@huggingface/transformers) feature-extraction pipeline, mean-pooled + L2-normalized. Notes are embedded in batches in a single pipeline call. |
-| Device | Auto-detects WebGPU and falls back to WASM (CPU). Pin one in settings. |
-| ONNX runtime | The matching `onnxruntime-web` `.wasm`/`.mjs` files are copied out of the resolved dependency at build time and **shipped in the plugin's `ort/` folder**, so the WASM build always matches the bundled JS glue and works offline. The plugin points the runtime at that local folder via the vault's resource path. |
-| Storage | Vectors persist as compact JSON in the plugin's config dir (`index.json`). Model weights cache in the browser Cache API. |
+Each Markdown note (its title plus the first ~1500 characters of cleaned body text)
+is turned into a vector — a list of numbers that captures its meaning — by the
+embedding model. For the note you're viewing, every other note is ranked by
+**cosine similarity** to it, and the closest matches are shown as cards with a
+similarity percentage.
+
+The model runs through [`@huggingface/transformers`](https://www.npmjs.com/package/@huggingface/transformers)
+on the local ONNX runtime: **WebGPU** when your machine has a usable GPU, otherwise
+**WASM** on the CPU (always available, no GPU needed). The runtime's `.wasm` is
+**shipped inside the plugin**, so the only network traffic ever is the one-time
+download of the model weights from the Hugging Face Hub; afterwards the weights are
+cached and nothing is fetched again.
+
+Vectors persist as compact JSON in the plugin's config dir, so the index survives
+restarts and only changed notes are re-embedded.
+
+## Features
+
+- **Semantic ranking** — for the active note, ranks every other note by cosine
+  similarity and shows the top matches as cards: **title**, muted **folder path**,
+  a short **snippet**, and a **similarity %** pill. Click a card to open that note.
+- **Fully local & private** — embeddings run in-app via WebGPU or WASM; notes are
+  never sent anywhere. Works offline after the one-time model download.
+- **Multilingual** — a multilingual model matches notes across German, English, and
+  100+ other languages.
+- **Persisted index** — vectors are saved to disk, so reopening the vault is instant
+  and doesn't re-embed everything.
+- **Incremental updates** — changed, created, and renamed notes are re-embedded on a
+  20-second idle pause, so typing never kicks off work mid-edit.
+- **Keyword fallback** — while the index is still building (or for a brand-new note
+  with no vector yet), the panel falls back to a cheap keyword / tag / link-overlap
+  ranking — shown with a `~` pill — so it's never empty.
+- **Clear status** — a live status line shows indexing progress; if the model can't
+  load (e.g. no connection on first run), it surfaces an error instead of silently
+  showing nothing.
 
 ## Settings
 
-- **Model** — embedding model id (dropdown of vetted choices, or paste a custom one).
-- **Compute device** — Auto / WebGPU / WASM.
-- **Number of results** — how many cards to show (default 12).
-- **Minimum similarity** — hide matches below this cosine score (default 0.3).
-- **Embed character limit** — how much of each note's body to embed (default 1500).
-- **Excluded folders** — folders to leave out of the index.
+- **Performance profile** — one-click presets. **Balanced** is lighter and faster;
+  **Best quality** uses a larger model and more context for the strongest matches.
+- **Model** — the embedding model (a dropdown of vetted choices, or paste a custom
+  Hugging Face id). The default `multilingual-e5-small` gives the best German +
+  English quality at a small size.
+- **Compute device** — **Auto** (WebGPU when available, else WASM), **WebGPU**, or
+  **WASM**.
+- **Number of results** — how many cards to show.
+- **Minimum similarity** — hide matches below this cosine score (0–1).
+- **Embed character limit** — how much of each note's body to embed after the title.
+- **Excluded folders** — folders to leave out of the index (and everything beneath
+  them), one per line or comma-separated.
 - **Show snippet** — toggle the per-card text preview.
-- **Rebuild index** — force a full re-embed (also available from the command palette and the panel's refresh icon).
+- **Rebuild index** — force a full re-embed (also on the command palette and the
+  panel's refresh icon).
 
-Changing the model or compute device transparently rebuilds the index; unrelated setting changes (sliders, toggles) never trigger a re-embed.
+Changing the model or compute device transparently rebuilds the index; unrelated
+changes (sliders, toggles) never trigger a re-embed.
 
-## First run
+## Install
 
-On first launch the plugin downloads the model weights (~110 MB for the quantized WASM build) from the Hugging Face Hub. The ONNX runtime itself ships with the plugin, so only the model weights are fetched. This happens once; a progress notice is shown, and the weights are cached. If the model fails to load (no connection on first run, or a firewall/CSP blocking the Hub), the panel shows an error in its status line and a Notice, and degrades to keyword ranking until it can load — it never silently shows empty results.
+### From a release
+
+Download `related-notes.zip` from the latest release and extract it into
+`.obsidian/plugins/related-notes/`. The zip already includes the ONNX runtime
+`.wasm` in its `ort/` folder, so nothing extra is needed — only the model weights
+are fetched, once, on first use.
+
+### With BRAT
+
+Add this repository in [BRAT](https://github.com/TfTHacker/obsidian42-brat) and
+enable **Smart Related Notes** from the community-plugins list.
+
+On first launch the model weights download from the Hugging Face Hub with a progress
+notice, then cache. This happens once; after that the plugin works offline. The
+download size depends on the compute path: roughly 110 MB for the quantized
+(WASM/CPU) build, and larger (~470 MB for the default model) for the fp32 build
+WebGPU uses.
 
 ## Requirements
 
-- Desktop only (the model and WebGPU need a desktop Electron environment).
+- Desktop only (the embedding runtime needs a desktop Electron environment).
 - Obsidian 1.7.2 or newer.
 
-## Building
+## Development
+
+A TypeScript project bundled with esbuild (entry `src/main.ts` → root `main.js`).
 
 ```bash
-npm install
-npm run build   # gen-ort -> tsc --noEmit -> esbuild production bundle (main.js + ort/)
-npm run dev     # watch build with inline sourcemaps
-npm run lint    # eslint (typescript-eslint + eslint-plugin-obsidianmd)
+npm install          # install dev dependencies
+npm run dev          # esbuild watch build (inline sourcemap, no minify)
+npm run build        # gen-ort -> tsc --noEmit -> minified production bundle
+npm run lint         # eslint (typescript-eslint + eslint-plugin-obsidianmd)
 ```
 
-The build step (`gen-ort.mjs`) writes `src/ort-version.ts` (the pinned runtime version + CDN fallback URL) and copies the matching `onnxruntime-web` wasm assets into `ort/`. Both are build artifacts and are gitignored. The release workflow packages `main.js`, `manifest.json`, `styles.css`, and the `ort/` folder into `related-notes.zip`; for a manual install, extract that zip into `.obsidian/plugins/related-notes/`.
+`gen-ort.mjs` runs before tsc/lint/esbuild: it writes `src/ort-version.ts` (the
+pinned `onnxruntime-web` version + a CDN fallback URL) and copies the matching
+`onnxruntime-web` `.wasm`/`.mjs` assets into `ort/`. Both are build artifacts and are
+gitignored. The release workflow packages `main.js`, `manifest.json`, `styles.css`,
+and the `ort/` folder into `related-notes.zip`.
+
+The renderer reports itself as a Node environment, which would otherwise make
+transformers.js pick the (externalized, unavailable) `onnxruntime-node` backend.
+`src/ort-shim.ts` — imported first in `main.ts` — installs the bundled
+`onnxruntime-web` under `Symbol.for("onnxruntime")` before transformers loads, so the
+web runtime is used and WebGPU/WASM work.
 
 ## License
 

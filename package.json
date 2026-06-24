@@ -1,6 +1,6 @@
 {
   "name": "related-notes",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Surface notes ranked by local semantic similarity to the one you're reading, as a sidebar card stack.",
   "main": "main.js",
   "scripts": {
@@ -23,7 +23,8 @@
   "author": "Saiki77",
   "license": "MIT",
   "dependencies": {
-    "@huggingface/transformers": "3.7.6"
+    "@huggingface/transformers": "3.7.6",
+    "onnxruntime-web": "1.22.0-dev.20250409-89f8206ba4"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
