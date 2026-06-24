@@ -50,7 +50,9 @@ jobs:
           # bundled, or WASM init fails. Fail the release if the file is missing.
           test -f ort/ort-wasm-simd-threaded.jsep.wasm
           test -f ort/ort-wasm-simd-threaded.jsep.mjs
-          ORT_VERSION=$(node -p "require('onnxruntime-web/package.json').version")
+          # Version read from the generated pin file (onnxruntime-web blocks
+          # require('onnxruntime-web/package.json') via its "exports" map).
+          ORT_VERSION=$(node -e "console.log((require('fs').readFileSync('src/ort-version.ts','utf8').match(/ORT_WEB_VERSION = \"([^\"]+)\"/)||[])[1]||'unknown')")
           echo "Shipping onnxruntime-web@${ORT_VERSION} wasm assets."
 
       - name: Package plugin folder (includes self-hosted wasm)
