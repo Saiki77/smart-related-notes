@@ -25,6 +25,36 @@
 // leaving supportedDevices empty, so every device threw "Should be one of: .".
 // Flipping IS_NODE_ENV instead takes the real web branch, which both selects
 // onnxruntime-web AND populates the device list.
+//
+// SECOND, SEPARATE Node check: onnxruntime-web's Emscripten wasm glue decides
+// node-vs-web with `process.versions.node && process.type != "renderer"`. In
+// Obsidian's renderer `process.type` is NOT "renderer", so the glue concludes
+// Node and `import()`s the Node-only `worker_threads` module → "Failed to resolve
+// module specifier 'worker_threads'" / "no available backend found". This check
+// runs at session-create time (embed), long after the microtask above restored
+// release.name, and it reads process.type (not release.name) — so we must fix it
+// separately. We ARE in an Electron renderer, so set process.type to its correct
+// value, persistently, before any embedding runs.
+const proc =
+  typeof process !== "undefined"
+    ? (process as { type?: string })
+    : undefined;
+if (proc && proc.type !== "renderer") {
+  try {
+    proc.type = "renderer";
+  } catch {
+    try {
+      Object.defineProperty(proc, "type", {
+        value: "renderer",
+        configurable: true,
+        writable: true,
+      });
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
 const release =
   typeof process !== "undefined"
     ? (process.release as { name?: string } | undefined)
