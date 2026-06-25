@@ -72,7 +72,8 @@ export interface RelatedNotesSettings {
   // mean-centered (floor-free) score scale, then sets it true.
   centeredScaleMigrated: boolean;
   embedCharLimit: number;
-  excludeFolders: string; // comma- or newline-separated folder paths
+  excludeFolders: string; // comma- or newline-separated folder paths (index + links)
+  excludeFoldersLinks: string; // additionally excluded from link suggestions only
   showSnippet: boolean;
   // --- multi-vector / ranking ---
   chunking: boolean; // master toggle for the chunk-level path
@@ -111,6 +112,7 @@ export const DEFAULT_SETTINGS: RelatedNotesSettings = {
   centeredScaleMigrated: false,
   embedCharLimit: 1500,
   excludeFolders: "",
+  excludeFoldersLinks: "",
   showSnippet: true,
   chunking: true,
   structureInfluence: 0.15,
@@ -269,7 +271,7 @@ export default class RelatedNotesPlugin extends Plugin {
     this.store.setRenderHook(() => this.getView()?.requestRender());
 
     // The precision backbone for both link features.
-    this.titleIndex = new TitleIndex(this.app);
+    this.titleIndex = new TitleIndex(this.app, () => this.linkExcludedFolders());
 
     this.registerView(VIEW_TYPE_RELATED, (leaf) => new RelatedNotesView(leaf, this));
 
@@ -764,6 +766,19 @@ export default class RelatedNotesPlugin extends Plugin {
       .filter((s) => s.length > 0);
   }
 
+  private parseLinkExcludeFolders(): string[] {
+    return this.settings.excludeFoldersLinks
+      .split(/[\n,]/)
+      .map((s) => s.trim().replace(/\/+$/, ""))
+      .filter((s) => s.length > 0);
+  }
+
+  // Folders the TitleIndex must skip: anything excluded from the index (so it is
+  // never suggested as a link either) plus the link-only exclusions.
+  private linkExcludedFolders(): string[] {
+    return [...this.parseExcludeFolders(), ...this.parseLinkExcludeFolders()];
+  }
+
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
     this.store.updateOptions(this.storeOptions());
@@ -1011,7 +1026,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Excluded folders")
       .setDesc(
-        "Folders to leave out of the index, one per line (or comma-separated). Matches a folder and everything beneath it.",
+        "Folders left out of the index entirely — not ranked and not suggested as links. One per line (or comma-separated); matches a folder and everything beneath it.",
       )
       .addTextArea((t) =>
         t
@@ -1019,6 +1034,23 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.excludeFolders)
           .onChange((v) => {
             this.plugin.settings.excludeFolders = v;
+            this.plugin.titleIndex.markDirty();
+            this.debouncedSave();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Folders excluded from link suggestions")
+      .setDesc(
+        "Folders whose notes stay indexed and ranked in the panel, but are never suggested as inline [[links]] (no glow). One per line (or comma-separated).",
+      )
+      .addTextArea((t) =>
+        t
+          .setPlaceholder("Daily\nAttachments/templates")
+          .setValue(this.plugin.settings.excludeFoldersLinks)
+          .onChange((v) => {
+            this.plugin.settings.excludeFoldersLinks = v;
+            this.plugin.titleIndex.markDirty();
             this.debouncedSave();
           }),
       );

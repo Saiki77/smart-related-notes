@@ -30,6 +30,8 @@ export interface ResolvedSurface {
 
 export class TitleIndex {
   private readonly app: App;
+  // Folders whose notes are never offered as link targets (index- + link-excluded).
+  private readonly excludedFolders: () => string[];
 
   // Normalized surface -> the files that own it. An array (not a single file) so
   // ambiguity is detectable, mirroring IndexStore.ambiguousBasenames.
@@ -44,8 +46,9 @@ export class TitleIndex {
   private compiled: RegExp | null = null;
   private compiledForPath: string | null = null;
 
-  constructor(app: App) {
+  constructor(app: App, excludedFolders: () => string[]) {
     this.app = app;
+    this.excludedFolders = excludedFolders;
   }
 
   // Normalize a surface for comparison and as a map key:
@@ -74,7 +77,9 @@ export class TitleIndex {
   // it to coalesce bulk-edit bursts.
   private rebuild(): void {
     const map = new Map<string, TFile[]>();
+    const excluded = this.excludedFolders();
     for (const file of this.app.vault.getMarkdownFiles()) {
+      if (isInExcludedFolder(file.path, excluded)) continue;
       this.addSurface(map, file.basename, file);
       const cache = this.app.metadataCache.getFileCache(file);
       const aliases = cache ? parseFrontMatterAliases(cache.frontmatter) ?? [] : [];
@@ -211,4 +216,12 @@ export class TitleIndex {
 // Escape a string for literal use inside a RegExp.
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// True when the path is inside one of the excluded folders (or equals it).
+function isInExcludedFolder(path: string, folders: string[]): boolean {
+  return folders.some((folder) => {
+    const f = folder.replace(/\/+$/, "");
+    return f.length > 0 && (path === f || path.startsWith(`${f}/`));
+  });
 }

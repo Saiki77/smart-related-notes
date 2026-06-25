@@ -1,6 +1,7 @@
 import {
   ItemView,
   WorkspaceLeaf,
+  TFile,
   setIcon,
   debounce,
   type Debouncer,
@@ -116,8 +117,7 @@ export class RelatedNotesView extends ItemView {
     this.listEl.empty();
 
     if (!active || active.extension !== "md") {
-      this.subtitleEl.setText("Open a note to see related notes");
-      this.renderEmpty("No active note.");
+      this.renderRecent();
       return;
     }
 
@@ -141,6 +141,54 @@ export class RelatedNotesView extends ItemView {
 
   private renderEmpty(text: string): void {
     this.listEl.createDiv({ cls: "rn-empty", text });
+  }
+
+  // With no active note, surface recent notes so the panel stays useful: recently
+  // opened, falling back to recently modified for a vault with no open-history yet.
+  private renderRecent(): void {
+    const recent = this.recentNotes();
+    if (recent.length === 0) {
+      this.subtitleEl.setText("Open a note to see related notes");
+      this.renderEmpty("No active note.");
+      return;
+    }
+    this.subtitleEl.setText("Recent notes");
+    for (const file of recent) this.renderRecentCard(file);
+  }
+
+  private recentNotes(): TFile[] {
+    const out: TFile[] = [];
+    const seen = new Set<string>();
+    for (const path of this.app.workspace.getLastOpenFiles()) {
+      if (seen.has(path)) continue;
+      const f = this.app.vault.getAbstractFileByPath(path);
+      if (f instanceof TFile && f.extension === "md") {
+        seen.add(path);
+        out.push(f);
+        if (out.length >= this.plugin.settings.topK) break;
+      }
+    }
+    if (out.length > 0) return out;
+    // Fresh vault / no open-history: fall back to the most recently modified notes.
+    return this.app.vault
+      .getMarkdownFiles()
+      .sort((a, b) => b.stat.mtime - a.stat.mtime)
+      .slice(0, this.plugin.settings.topK);
+  }
+
+  private renderRecentCard(file: TFile): void {
+    const card = this.listEl.createDiv({ cls: "rn-card" });
+    const top = card.createDiv({ cls: "rn-card-top" });
+    top.createDiv({ cls: "rn-title", text: file.basename });
+    const parentPath = file.parent?.path ?? "";
+    if (parentPath.length > 0 && parentPath !== "/") {
+      card.createDiv({ cls: "rn-path", text: parentPath });
+    }
+    const rel = relativeTime(file.stat.mtime);
+    if (rel) card.createDiv({ cls: "rn-recency", text: `edited ${rel}` });
+    card.addEventListener("click", () => {
+      void this.app.workspace.getLeaf(false).openFile(file);
+    });
   }
 
   private renderCard(item: RankedNote): void {
