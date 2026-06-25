@@ -68,6 +68,19 @@ restarts and only changed notes are re-embedded.
   load (e.g. no connection on first run), it surfaces an error instead of silently
   showing nothing.
 
+## Roadmap
+
+<p align="center">
+  <img src="docs/roadmap.svg" alt="On the roadmap, coming soon: link recommendations that suggest connections between related but unlinked notes, and a stale note finder that surfaces orphaned or long-untouched notes" width="880">
+</p>
+
+Next up, going beyond *reading* related notes to *tidying the graph* itself:
+
+- **Link recommendations** — find pairs of related notes that aren't linked yet and
+  suggest the connection, so you can build your graph with a click.
+- **Stale note finder** — surface orphaned and forgotten notes (nothing linking in or
+  out, or untouched for months) so good ideas don't get buried.
+
 ## Settings
 
 - **Performance profile** — one-click presets. **Balanced** is lighter and faster;

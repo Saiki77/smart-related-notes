@@ -1,0 +1,39 @@
+<svg viewBox="0 0 1200 400" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <rect width="1200" height="400" rx="20" fill="#191920"/>
+  <rect x="0.5" y="0.5" width="1199" height="399" rx="19.5" fill="none" stroke="#2e2e38" stroke-width="1"/>
+
+  <text x="56" y="60" fill="#ededf2" font-size="30" font-weight="600" letter-spacing="-0.4">On the roadmap</text>
+  <g transform="translate(320,38)">
+    <rect x="0" y="0" width="142" height="30" rx="15" fill="#2e2410" stroke="#6b5420" stroke-width="1"/>
+    <circle cx="22" cy="15" r="4" fill="#e0b45a"/>
+    <text x="38" y="20" fill="#e6c074" font-size="14" font-weight="500">Coming soon</text>
+  </g>
+  <text x="56" y="98" fill="#a7a7b4" font-size="18">Next up: turning the notes it relates into a tidier, better-connected vault, not just a list to read.</text>
+
+  <g transform="translate(56,130)">
+    <rect x="0" y="0" width="526" height="232" rx="14" fill="#202027" stroke="#383844" stroke-width="1" stroke-dasharray="2 5"/>
+    <g transform="translate(36,34)">
+      <circle cx="8" cy="9" r="7" fill="#a78bfa"/>
+      <circle cx="44" cy="41" r="7" fill="#5b9bff"/>
+      <line x1="13" y1="14" x2="39" y2="36" stroke="#6a6a8a" stroke-width="2.2" stroke-dasharray="3 3"/>
+      <path d="M44 2 L46 8 L52 10 L46 12 L44 18 L42 12 L36 10 L42 8 Z" fill="#a78bfa"/>
+    </g>
+    <text x="36" y="124" fill="#ededf2" font-size="20" font-weight="500">Link recommendations</text>
+    <text x="36" y="158" fill="#9a9aa6" font-size="15">Finds pairs of related notes that aren't linked yet</text>
+    <text x="36" y="182" fill="#9a9aa6" font-size="15">and suggests the connection, building your graph</text>
+    <text x="36" y="206" fill="#9a9aa6" font-size="15">with a click, no manual hunting.</text>
+  </g>
+
+  <g transform="translate(618,130)">
+    <rect x="0" y="0" width="526" height="232" rx="14" fill="#202027" stroke="#383844" stroke-width="1" stroke-dasharray="2 5"/>
+    <g transform="translate(38,32)">
+      <circle cx="20" cy="22" r="14" fill="none" stroke="#e0a458" stroke-width="2.2" stroke-dasharray="3 3.5"/>
+      <line x1="20" y1="22" x2="20" y2="14" stroke="#e0a458" stroke-width="2.2" stroke-linecap="round"/>
+      <line x1="20" y1="22" x2="26" y2="25" stroke="#e0a458" stroke-width="2.2" stroke-linecap="round"/>
+    </g>
+    <text x="38" y="124" fill="#ededf2" font-size="20" font-weight="500">Stale note finder</text>
+    <text x="38" y="158" fill="#9a9aa6" font-size="15">Surfaces orphaned and forgotten notes with</text>
+    <text x="38" y="182" fill="#9a9aa6" font-size="15">nothing linking in or out, or untouched for</text>
+    <text x="38" y="206" fill="#9a9aa6" font-size="15">months, so good ideas don't get buried.</text>
+  </g>
+</svg>

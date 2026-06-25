@@ -3,7 +3,7 @@
   <rect x="0.5" y="0.5" width="1199" height="359" rx="19.5" fill="none" stroke="#2e2e38" stroke-width="1"/>
 
   <text x="56" y="62" fill="#ededf2" font-size="30" font-weight="600" letter-spacing="-0.4">Runs entirely on your machine</text>
-  <text x="56" y="98" fill="#a7a7b4" font-size="18">A small multilingual model does the work locally — no cloud, no account, nothing extra to install.</text>
+  <text x="56" y="98" fill="#a7a7b4" font-size="18">A small multilingual model does the work locally, with no cloud, no account, and nothing to install.</text>
 
   <g transform="translate(56,138)">
     <rect x="0" y="0" width="346" height="170" rx="14" fill="#202027" stroke="#33333f" stroke-width="1"/>
@@ -30,19 +30,19 @@
     </g>
     <text x="28" y="108" fill="#ededf2" font-size="18" font-weight="500">Nothing to install</text>
     <text x="28" y="134" fill="#9a9aa6" font-size="15">No Ollama, no local server, no</text>
-    <text x="28" y="155" fill="#9a9aa6" font-size="15">second app — it's self-contained.</text>
+    <text x="28" y="155" fill="#9a9aa6" font-size="15">second app. It's fully self-contained.</text>
   </g>
 
   <g transform="translate(798,138)">
     <rect x="0" y="0" width="346" height="170" rx="14" fill="#202027" stroke="#33333f" stroke-width="1"/>
-    <g transform="translate(30,26)">
+    <g transform="translate(28,26)">
       <rect x="2" y="18" width="34" height="24" rx="4" fill="#142a1c" stroke="#4ade80" stroke-width="2"/>
       <path d="M9 18 V11 a10 10 0 0 1 20 0 V18" fill="none" stroke="#4ade80" stroke-width="2"/>
       <circle cx="19" cy="29" r="3.2" fill="#4ade80"/>
       <path d="M19 31 V36" stroke="#4ade80" stroke-width="2" stroke-linecap="round"/>
     </g>
-    <text x="30" y="108" fill="#ededf2" font-size="18" font-weight="500">Private &amp; offline</text>
-    <text x="30" y="134" fill="#9a9aa6" font-size="15">Notes never leave your machine.</text>
-    <text x="30" y="155" fill="#9a9aa6" font-size="15">Works offline after one download.</text>
+    <text x="28" y="108" fill="#ededf2" font-size="18" font-weight="500">Private &amp; offline</text>
+    <text x="28" y="134" fill="#9a9aa6" font-size="15">Notes never leave your machine.</text>
+    <text x="28" y="155" fill="#9a9aa6" font-size="15">Works offline after one download.</text>
   </g>
 </svg>
