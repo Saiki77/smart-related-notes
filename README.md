@@ -26,11 +26,13 @@ languages naturally.
 
 ## How it works
 
-Each Markdown note (its title plus the first ~1500 characters of cleaned body text)
-is turned into a vector (a list of numbers that captures its meaning) by the
-embedding model. For the note you're viewing, every other note is ranked by
-**cosine similarity** to it, and the closest matches are shown as cards with a
-similarity percentage.
+Each Markdown note is split into coherent **idea-chunks** — at heading and paragraph
+boundaries, covering the whole note — and every chunk is turned into a vector by the
+embedding model. A note is represented by both an **overall vector** and its **chunk
+vectors**, so another note can match it section-by-section, not just as a whole. For
+the note you're viewing, every other note is ranked by the best **cosine similarity**
+of their chunks (with its title weighted), and the closest matches are shown as cards
+with a similarity percentage.
 
 The model runs through [`@huggingface/transformers`](https://www.npmjs.com/package/@huggingface/transformers)
 on the local ONNX runtime, on the **CPU via WASM** by default, multi-threaded so a
@@ -104,7 +106,10 @@ Next up, going beyond *reading* related notes to *tidying the graph* itself:
 - **Minimum similarity**: hide matches below this topical-similarity score (0–1).
   Scores are mean-centered (the embedding noise floor is removed), so unrelated notes
   sit near 0 and ~0.2 cleanly separates on-topic notes. Raise for a tighter list.
-- **Embed character limit**: how much of each note's body to embed after the title.
+- **Max chunks per note** (advanced): ceiling on idea-chunks embedded per note. The
+  whole note is covered up to this cap; only very long notes approach it.
+- **Heading context** (advanced): embeds each section's first chunk with its note +
+  heading breadcrumb for context. On by default; toggle to compare.
 - **Excluded folders**: folders left out of the index entirely (and everything
   beneath them); not ranked and not suggested as links. One per line or comma-separated.
 - **Folders excluded from link suggestions**: folders whose notes stay indexed and

@@ -24,7 +24,7 @@ import {
 // the BINARY index format: the int8 chunk buffers + fp32 means now live in a single
 // binary blob (index.bin) referenced by byte offsets from a small JSON manifest
 // (index.json), instead of megabytes of base64-in-JSON. The bump forces ONE clean
-// rebuild on upgrade — an old v3 single-file index.json parses with version !== 4 (or
+// rebuild on upgrade — an older index.json parses with version !== INDEX_VERSION (or
 // has no companion index.bin) and is detected as stale, deleted, and rebuilt. Any
 // index written for a different model/dims, or a different quantization/text-
 // persistence policy, is likewise invalidated. No silent half-migration.
@@ -35,7 +35,7 @@ import {
 // byte-for-byte the old load-time dequant, so ranking results are identical; only
 // memory + load time change.
 // =============================================================================
-const INDEX_VERSION = 4 as const;
+const INDEX_VERSION = 5 as const;
 
 // The small JSON manifest (header + per-entry metadata + scales + chunkTexts) and
 // the binary blob (all fp32 means + all int8 chunk buffers). Written/renamed via
@@ -47,11 +47,16 @@ const BIN_TMP_FILE = "index.bin.tmp";
 const BATCH_SIZE = 8;
 
 // Chunking knobs. MAX_CHUNKS is the body-chunk cap (the title chunk is extra, so a
-// note holds up to MAX_CHUNKS + 1 vectors). TARGET_WORDS controls greedy sentence
-// windowing (~200 tokens). Defaults are overridable via IndexStoreOptions.maxChunks.
-const DEFAULT_MAX_CHUNKS = 16;
-const TARGET_WORDS = 60;
+// note holds up to MAX_CHUNKS + 1 vectors). chunkNote() is structure-aware: it splits
+// the WHOLE note at heading/paragraph boundaries into ~TARGET_WORDS windows (~110
+// tokens, filling the model's 128-token window). Defaults overridable via maxChunks.
+const DEFAULT_MAX_CHUNKS = 48;
+const TARGET_WORDS = 80;
 const MIN_WINDOW_WORDS = 10;
+// Hard per-chunk char budget (~120 tokens for EN/DE with this subword tokenizer). A
+// window above this is split at sentence, then whitespace, boundaries so the model
+// never silently truncates a chunk's tail and every chunk stays in-distribution.
+const MAX_CHUNK_CHARS = 480;
 
 // Title chunk lives at index 0 of every note's chunk buffer and is weighted ~2x in
 // the per-direction BiMax means so a strong title match lifts the score.
@@ -143,9 +148,9 @@ const LABEL_DRAIN_BATCH = 8;
 // the configured cap exactly — byte-for-byte unchanged behavior. This only ever
 // LOWERS the cap automatically; nothing to configure.
 const ADAPTIVE_CHUNK_TIERS: { maxNotes: number; cap: number }[] = [
-  { maxNotes: 5000, cap: 12 },
-  { maxNotes: 10000, cap: 10 },
-  { maxNotes: Infinity, cap: 8 },
+  { maxNotes: 5000, cap: 36 },
+  { maxNotes: 10000, cap: 28 },
+  { maxNotes: Infinity, cap: 20 },
 ];
 const ADAPTIVE_CHUNK_FLOOR_NOTES = 2000;
 
@@ -220,7 +225,6 @@ export interface IndexProgress {
 }
 
 export interface IndexStoreOptions {
-  embedCharLimit: number;
   excludeFolders: string[];
   topK: number;
   minSimilarity: number;
@@ -230,15 +234,24 @@ export interface IndexStoreOptions {
   maxChunks: number; // body-chunk cap (excludes the title chunk)
   shortlistSize: number; // Stage-1 -> Stage-2 funnel width
   showSummary: boolean; // persist chunkTexts so summaries survive a reload
+  headingContext: boolean; // prefix each section's first chunk with a heading breadcrumb
 }
 
 type ProgressListener = (p: IndexProgress) => void;
 
 // One paragraph/sentence-window chunk plus the structural metadata we track for it.
 interface NoteChunk {
-  text: string;
+  text: string; // raw window text (persisted for summaries/snippets)
   isTitle: boolean;
-  heading?: string;
+  heading?: string; // breadcrumb "Note > H1 > H2" of the owning section (in-memory)
+  embedText?: string; // what to actually embed (heading-context-prefixed); text if unset
+}
+
+// What to feed the embedder for a chunk: the heading-context-prefixed input when set,
+// else the raw text. Used by BOTH build() and the incremental embedFile() so the two
+// paths can never diverge (the prefix must be on every embed, not only full builds).
+function chunkEmbedInput(c: NoteChunk): string {
+  return c.embedText ?? c.text;
 }
 
 // Active-note context for the hybrid structural boost, computed once per rank().
@@ -386,6 +399,93 @@ function windowSentences(sentences: string[]): string[] {
     }
   }
   return windows;
+}
+
+// Split RAW markdown into sections at ATX headings (`#`..`######`), carrying a
+// heading breadcrumb per section (deeper levels popped as we ascend). Headings are
+// the primary logical break — a section's body is everything until the next heading.
+// Code fences and YAML frontmatter are skipped so a `#` inside code is never a
+// heading. Pre-heading content becomes a section with an empty breadcrumb.
+export function splitIntoSections(
+  raw: string,
+): { breadcrumb: string[]; body: string }[] {
+  const noFront = raw.replace(/^---\n[\s\S]*?\n---\n?/, "");
+  const lines = noFront.split("\n");
+  const sections: { breadcrumb: string[]; body: string }[] = [];
+  const stack: string[] = [];
+  const levels: number[] = [];
+  let buf: string[] = [];
+  let inFence = false;
+  let fenceChar = "";
+
+  const flush = (): void => {
+    if (buf.length > 0) sections.push({ breadcrumb: stack.slice(), body: buf.join("\n") });
+    buf = [];
+  };
+
+  for (const line of lines) {
+    const fence = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+    if (fence) {
+      const ch = fence[1][0];
+      if (!inFence) {
+        inFence = true;
+        fenceChar = ch;
+      } else if (ch === fenceChar) {
+        inFence = false;
+      }
+      buf.push(line);
+      continue;
+    }
+    if (!inFence) {
+      const h = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+      if (h) {
+        flush();
+        const level = h[1].length;
+        while (levels.length > 0 && levels[levels.length - 1] >= level) {
+          levels.pop();
+          stack.pop();
+        }
+        levels.push(level);
+        stack.push(h[2].trim());
+        continue; // the heading text lives in the breadcrumb, not the body
+      }
+    }
+    buf.push(line);
+  }
+  flush();
+  return sections;
+}
+
+// Keep a window within MAX_CHUNK_CHARS so the model never silently truncates it:
+// split at sentence boundaries first, then whitespace for a single over-long
+// sentence. Returns [text] unchanged when already within budget.
+export function splitToBudget(text: string): string[] {
+  if (text.length <= MAX_CHUNK_CHARS) return [text];
+  const out: string[] = [];
+  let buf = "";
+  const pushBuf = (): void => {
+    const t = buf.trim();
+    if (t.length > 0) out.push(t);
+    buf = "";
+  };
+  for (const s of splitSentences(text)) {
+    if (buf.length > 0 && buf.length + 1 + s.length > MAX_CHUNK_CHARS) pushBuf();
+    if (s.length > MAX_CHUNK_CHARS) {
+      pushBuf();
+      let rest = s;
+      while (rest.length > MAX_CHUNK_CHARS) {
+        let cut = rest.lastIndexOf(" ", MAX_CHUNK_CHARS);
+        if (cut < MAX_CHUNK_CHARS * 0.5) cut = MAX_CHUNK_CHARS;
+        out.push(rest.slice(0, cut).trim());
+        rest = rest.slice(cut).trim();
+      }
+      buf = rest;
+    } else {
+      buf = buf.length > 0 ? `${buf} ${s}` : s;
+    }
+  }
+  pushBuf();
+  return out.length > 0 ? out : [text];
 }
 
 // =============================================================================
@@ -791,7 +891,7 @@ export class IndexStore {
   // Load a persisted index (binary format). Returns false (so the caller triggers a
   // build) when either file is missing, malformed, or was written for a different
   // model/dimension/version — including ANY old single-file (v3 base64-JSON) index,
-  // which has version !== 4 and/or no companion index.bin and so forces a clean
+  // which has version !== INDEX_VERSION and/or no companion index.bin and forces a clean
   // rebuild on upgrade. A detected-stale state also removes the old artifacts so no
   // orphaned multi-MB base64 file lingers.
   async load(): Promise<boolean> {
@@ -1031,64 +1131,105 @@ export class IndexStore {
   }
 
   // --- chunking --------------------------------------------------------------
-  // Split a note into a title chunk + capped sentence-window body chunks. The
-  // title chunk is standalone (no glued body prefix) so a short directly-related
-  // note stays specific. When chunking is disabled, a single body chunk is emitted
-  // (== the old single-blob behavior, modulo the standalone title chunk).
-  private chunkNote(file: TFile, body: string): NoteChunk[] {
-    const chunks: NoteChunk[] = [
-      { text: file.basename, isTitle: true },
-    ];
+  // Heading-breadcrumb prefix for a section's first chunk (embed input only). Note
+  // title + the last 2 heading levels — unique enough per note to add context
+  // without the "embedding collapse" of repeating one short string across chunks.
+  private headingPrefix(file: TFile, breadcrumb: string[]): string {
+    if (!this.options.headingContext) return "";
+    // Cap the basename (not the whole joined string) so a long note title can't slice
+    // away the breadcrumb tail and collapse every section's prefix to the same string.
+    const base = file.basename.length > 40 ? file.basename.slice(0, 40) : file.basename;
+    let prefix = [base, ...breadcrumb.slice(-2)].join(" > ");
+    if (prefix.length > 72) prefix = prefix.slice(0, 72);
+    return `${prefix}: `;
+  }
 
-    const charLimit = this.options.embedCharLimit;
+  // Structure-aware whole-note chunking: chunk[0] is the standalone title; the body
+  // is split at headings (sections) then paragraphs into ~TARGET_WORDS windows, each
+  // kept within MAX_CHUNK_CHARS so the model never truncates it. The first window of
+  // each section optionally carries a heading-breadcrumb prefix on its EMBED input
+  // (not its stored text). When chunking is off, a single whole-note body chunk is
+  // emitted. The whole note is covered (no char truncation); only the chunk COUNT is
+  // capped, and the cap keeps every section represented so no section vanishes.
+  private chunkNote(file: TFile, body: string): NoteChunk[] {
+    const chunks: NoteChunk[] = [{ text: file.basename, isTitle: true }];
 
     if (!this.options.chunking) {
       const flat = stripMarkdown(body);
-      const limited = flat.length > charLimit ? flat.slice(0, charLimit) : flat;
-      if (limited.length > 0) chunks.push({ text: limited, isTitle: false });
+      if (flat.length > 0) chunks.push({ text: flat, isTitle: false });
       return chunks;
     }
 
-    const blocks = stripMarkdownBlocks(body);
-    const limited =
-      blocks.length > charLimit ? blocks.slice(0, charLimit) : blocks;
-
-    // Split into paragraphs on blank lines, tracking the nearest preceding heading.
-    // Heading lines are short lines that originally started with `#` — by now the
-    // marker is gone, so we approximate a heading as a standalone short line that is
-    // immediately followed by a blank line. We don't prepend it (avoids embedding
-    // collapse); the hook is left for future light context.
-    const paragraphs = limited
-      .split(/\n{2,}/)
-      .map((p) => p.replace(/\n/g, " ").trim())
-      .filter((p) => p.length > 0);
-
     const bodyChunks: NoteChunk[] = [];
-    for (const para of paragraphs) {
-      const sentences = splitSentences(para);
-      for (const w of windowSentences(sentences)) {
-        bodyChunks.push({ text: w, isTitle: false });
+    const sectionFirsts: number[] = []; // index of each section's first window
+    for (const section of splitIntoSections(body)) {
+      const cleaned = stripMarkdownBlocks(section.body);
+      if (cleaned.length === 0) continue;
+      const paragraphs = cleaned
+        .split(/\n{2,}/)
+        .map((p) => p.replace(/\n/g, " ").trim())
+        .filter((p) => p.length > 0);
+
+      const windows: string[] = [];
+      for (const para of paragraphs) {
+        for (const w of windowSentences(splitSentences(para))) {
+          for (const piece of splitToBudget(w)) windows.push(piece);
+        }
       }
+      if (windows.length === 0) continue;
+
+      const heading =
+        section.breadcrumb.length > 0 ? section.breadcrumb.join(" > ") : undefined;
+      const prefix = this.headingPrefix(file, section.breadcrumb);
+      windows.forEach((w, i) => {
+        const chunk: NoteChunk = { text: w, isTitle: false };
+        if (heading) chunk.heading = heading;
+        if (i === 0) {
+          sectionFirsts.push(bodyChunks.length);
+          if (prefix.length > 0) {
+            // Clamp the WINDOW portion (never the prefix) so prefix + window stays
+            // within MAX_CHUNK_CHARS — otherwise a full-budget section-first window
+            // plus the prefix would push the embed input back over the token limit.
+            const budget = MAX_CHUNK_CHARS - prefix.length;
+            let head = w;
+            if (head.length > budget) {
+              head = head.slice(0, budget);
+              const sp = head.lastIndexOf(" ");
+              if (sp > budget * 0.6) head = head.slice(0, sp);
+            }
+            chunk.embedText = prefix + head;
+          }
+        }
+        bodyChunks.push(chunk);
+      });
     }
 
-    // Cap: keep the first N-k windows + k evenly-spaced later windows so a long
-    // essay's tail is not dropped wholesale.
     const cap = this.maxChunks;
     if (bodyChunks.length <= cap) {
       chunks.push(...bodyChunks);
-    } else {
-      const head = Math.ceil(cap * 0.6);
-      const tailCount = cap - head;
-      for (let i = 0; i < head; i++) chunks.push(bodyChunks[i]);
-      // Evenly space the remaining picks across the tail region.
-      const start = head;
-      const span = bodyChunks.length - start;
-      for (let k = 0; k < tailCount; k++) {
-        const idx = start + Math.floor(((k + 1) * span) / (tailCount + 1));
-        chunks.push(bodyChunks[Math.min(idx, bodyChunks.length - 1)]);
-      }
+      return chunks;
     }
 
+    // Over cap: keep every section's first window (so no section vanishes), then fill
+    // the remaining budget head-heavy with an evenly-spaced tail.
+    const keep = new Set<number>();
+    for (const idx of sectionFirsts) {
+      if (keep.size >= cap) break;
+      keep.add(idx);
+    }
+    if (keep.size < cap) {
+      const rest: number[] = [];
+      for (let i = 0; i < bodyChunks.length; i++) if (!keep.has(i)) rest.push(i);
+      const head = Math.ceil((cap - keep.size) * 0.6);
+      for (let k = 0; k < head && k < rest.length; k++) keep.add(rest[k]);
+      const tailPool = rest.slice(head);
+      const tailCount = cap - keep.size;
+      for (let k = 0; k < tailCount && tailPool.length > 0; k++) {
+        const idx = Math.floor(((k + 1) * tailPool.length) / (tailCount + 1));
+        keep.add(tailPool[Math.min(idx, tailPool.length - 1)]);
+      }
+    }
+    for (const i of Array.from(keep).sort((a, b) => a - b)) chunks.push(bodyChunks[i]);
     return chunks;
   }
 
@@ -1144,7 +1285,9 @@ export class IndexStore {
             const chunks = await this.readChunks(file);
             if (chunks.length === 0) continue;
             pendingFiles.push({ file, chunks });
-            for (const c of chunks) allTexts.push(c.text);
+            // Embed the heading-context-prefixed input when present; assembleEntry
+            // still persists the raw c.text for snippets/labels.
+            for (const c of chunks) allTexts.push(chunkEmbedInput(c));
             offsets.push(allTexts.length);
           }
 
@@ -1291,7 +1434,7 @@ export class IndexStore {
     if (chunks.length === 0) return null;
     try {
       const vectors = await this.engine.embedBatch(
-        chunks.map((c) => c.text),
+        chunks.map(chunkEmbedInput),
         "query",
         onProgress,
       );

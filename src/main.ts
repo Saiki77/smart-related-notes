@@ -71,7 +71,6 @@ export interface RelatedNotesSettings {
   // One-time flag: when false, onload lowers a pre-1.8.0 minSimilarity onto the new
   // mean-centered (floor-free) score scale, then sets it true.
   centeredScaleMigrated: boolean;
-  embedCharLimit: number;
   excludeFolders: string; // comma- or newline-separated folder paths (index + links)
   excludeFoldersLinks: string; // additionally excluded from link suggestions only
   showSnippet: boolean;
@@ -82,6 +81,7 @@ export interface RelatedNotesSettings {
   showRecency: boolean; // muted "edited Nd ago" line
   maxChunks: number; // body-chunk cap (advanced)
   shortlistSize: number; // Stage-1 -> Stage-2 funnel width (advanced)
+  headingContext: boolean; // prefix each section's first chunk with a heading breadcrumb
   // --- linking (Features A + B) ---
   glowEnabled: boolean; // inline glow + 1-click link (Feature A)
   glowRestrictToLivePreview: boolean; // only decorate live preview
@@ -110,7 +110,6 @@ export const DEFAULT_SETTINGS: RelatedNotesSettings = {
   // the now-near-zero unrelated ones. (Pre-1.8.0 vaults are migrated down on load.)
   minSimilarity: 0.2,
   centeredScaleMigrated: false,
-  embedCharLimit: 1500,
   excludeFolders: "",
   excludeFoldersLinks: "",
   showSnippet: true,
@@ -118,8 +117,9 @@ export const DEFAULT_SETTINGS: RelatedNotesSettings = {
   structureInfluence: 0.15,
   showSummary: true,
   showRecency: false,
-  maxChunks: 16,
+  maxChunks: 48,
   shortlistSize: 60,
+  headingContext: true,
   // Precision-first, low-risk behaviors ON; riskier ones OFF. suggesterTakeOver's
   // effective default is computed against easy-links at layout-ready (see
   // resolveSuggesterTakeOver) so we don't fight it; the stored value is the
@@ -158,24 +158,24 @@ const PROFILES: Record<ProfileName, Partial<RelatedNotesSettings>> = {
     device: "auto",
     topK: 8,
     minSimilarity: 0.2,
-    embedCharLimit: 1200,
     showSnippet: true,
     chunking: true,
     showSummary: true,
     structureInfluence: 0.15,
-    maxChunks: 16,
+    maxChunks: 48,
+    headingContext: true,
   },
   best: {
     modelId: "Xenova/paraphrase-multilingual-mpnet-base-v2",
     device: "auto",
     topK: 20,
     minSimilarity: 0.2,
-    embedCharLimit: 3500,
     showSnippet: true,
     chunking: true,
     showSummary: true,
     structureInfluence: 0.2,
-    maxChunks: 20,
+    maxChunks: 64,
+    headingContext: true,
   },
 };
 
@@ -221,6 +221,7 @@ export default class RelatedNotesPlugin extends Plugin {
   private appliedChunking!: boolean;
   private appliedMaxChunks!: number;
   private appliedShowSummary!: boolean;
+  private appliedHeadingContext!: boolean;
   // Guards the engine-swap + rebuild path against re-entrancy.
   private swapping = false;
 
@@ -258,6 +259,7 @@ export default class RelatedNotesPlugin extends Plugin {
     this.appliedChunking = this.settings.chunking;
     this.appliedMaxChunks = this.settings.maxChunks;
     this.appliedShowSummary = this.settings.showSummary;
+    this.appliedHeadingContext = this.settings.headingContext;
     this.store = new IndexStore(
       this.app,
       this.engine,
@@ -747,7 +749,6 @@ export default class RelatedNotesPlugin extends Plugin {
   // --- settings glue ---------------------------------------------------------
   private storeOptions(): IndexStoreOptions {
     return {
-      embedCharLimit: this.settings.embedCharLimit,
       excludeFolders: this.parseExcludeFolders(),
       topK: this.settings.topK,
       minSimilarity: this.settings.minSimilarity,
@@ -756,6 +757,7 @@ export default class RelatedNotesPlugin extends Plugin {
       maxChunks: this.settings.maxChunks,
       shortlistSize: this.settings.shortlistSize,
       showSummary: this.settings.showSummary,
+      headingContext: this.settings.headingContext,
     };
   }
 
@@ -810,7 +812,8 @@ export default class RelatedNotesPlugin extends Plugin {
     const shapeChanged =
       this.appliedChunking !== this.settings.chunking ||
       this.appliedMaxChunks !== this.settings.maxChunks ||
-      this.appliedShowSummary !== this.settings.showSummary;
+      this.appliedShowSummary !== this.settings.showSummary ||
+      this.appliedHeadingContext !== this.settings.headingContext;
 
     if ((modelChanged || deviceChanged || indexSpeedChanged) && !this.swapping) {
       this.swapping = true;
@@ -827,6 +830,7 @@ export default class RelatedNotesPlugin extends Plugin {
         this.appliedChunking = this.settings.chunking;
         this.appliedMaxChunks = this.settings.maxChunks;
         this.appliedShowSummary = this.settings.showSummary;
+        this.appliedHeadingContext = this.settings.headingContext;
         // Swap the engine IN PLACE: the store (and the view's progress
         // subscription) stay valid, so the rebuild's status line stays live.
         this.store.setEngine(this.engine);
@@ -841,6 +845,7 @@ export default class RelatedNotesPlugin extends Plugin {
         this.appliedChunking = this.settings.chunking;
         this.appliedMaxChunks = this.settings.maxChunks;
         this.appliedShowSummary = this.settings.showSummary;
+        this.appliedHeadingContext = this.settings.headingContext;
         new Notice("Related notes: chunking settings changed, rebuilding index…");
         // Same engine, but force a full re-embed so every note's chunk set matches
         // the new shape.
@@ -1001,28 +1006,6 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       );
     }
 
-    {
-      const setting = new Setting(containerEl)
-        .setName("Embed character limit")
-        .setDesc(
-          "Total characters of each note's body considered for chunking. More context is more accurate but slower to index.",
-        );
-      const valueEl = setting.controlEl.createSpan({
-        cls: "related-notes-slider-value",
-        text: String(this.plugin.settings.embedCharLimit),
-      });
-      setting.addSlider((s) =>
-        s
-          .setLimits(500, 4000, 100)
-          .setValue(this.plugin.settings.embedCharLimit)
-          .onChange((v) => {
-            this.plugin.settings.embedCharLimit = v;
-            valueEl.setText(String(v));
-            this.debouncedSave();
-          }),
-      );
-    }
-
     new Setting(containerEl)
       .setName("Excluded folders")
       .setDesc(
@@ -1128,7 +1111,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       const setting = new Setting(containerEl)
         .setName("Max chunks per note")
         .setDesc(
-          "Advanced. Cap on sentence-window chunks embedded per note (the title is extra). Higher captures more of long notes but grows the index and slows ranking. Changing it rebuilds the index.",
+          "Advanced. Ceiling on idea-chunks embedded per note (the title is extra). The whole note is covered up to this cap; only very long notes approach it. Higher captures more breadth but grows the index and slows ranking. Changing it rebuilds the index.",
         );
       const valueEl = setting.controlEl.createSpan({
         cls: "related-notes-slider-value",
@@ -1136,7 +1119,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       });
       setting.addSlider((s) =>
         s
-          .setLimits(4, 32, 1)
+          .setLimits(8, 64, 1)
           .setValue(this.plugin.settings.maxChunks)
           .onChange((v) => {
             this.plugin.settings.maxChunks = v;
@@ -1145,6 +1128,18 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
           }),
       );
     }
+
+    new Setting(containerEl)
+      .setName("Heading context")
+      .setDesc(
+        "Prefix each section's first chunk with its note + heading breadcrumb when embedding, so a section embeds with the context of where it sits. Improves matching; turn off to compare. Changing it rebuilds the index.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.headingContext).onChange(async (v) => {
+          this.plugin.settings.headingContext = v;
+          await this.plugin.saveSettings();
+        }),
+      );
 
     {
       const setting = new Setting(containerEl)
