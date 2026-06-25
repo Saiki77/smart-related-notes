@@ -1,39 +1,39 @@
 <p align="center">
-  <img src="docs/hero.svg" alt="Smart Related Notes — the notes most related to what you're writing, found by meaning, running entirely on your machine" width="880">
+  <img src="docs/hero.svg" alt="Smart Related Notes: the notes most related to what you're writing, found by meaning, running entirely on your machine" width="880">
 </p>
 
 # Smart Related Notes
 
 A left-sidebar panel that surfaces the notes most **semantically similar** to the
-one you're reading — so you browse your vault by meaning, not by folders. Open any
+one you're reading, so you browse your vault by meaning, not by folders. Open any
 note and the panel ranks the rest by how closely they relate, as a stack of cards
 you can click to jump to.
 
 It's powered by a small **multilingual embedding model that runs entirely on your
-machine** — no cloud, no API key, no second app or server. Everything happens
+machine**: no cloud, no API key, no second app or server. Everything happens
 locally inside the renderer, so your notes never leave your computer. After a
 **one-time** model download (cached on first use), it works **fully offline**. The
 model understands German, English, and 100+ other languages, so matches cross
 languages naturally.
 
 <p align="center">
-  <img src="docs/feature-inline-links.svg" alt="Inline link suggestions — a concept that already has a note glows with a slim underline; click once to turn it into a wikilink, context-aware" width="880">
+  <img src="docs/feature-inline-links.svg" alt="Inline link suggestions: a concept that already has a note glows with a slim underline; click once to turn it into a wikilink, context-aware" width="880">
 </p>
 
 <p align="center">
-  <img src="docs/feature-local.svg" alt="Runs entirely on your machine — on your device, nothing to install, private and offline" width="880">
+  <img src="docs/feature-local.svg" alt="Runs entirely on your machine: on your device, nothing to install, private and offline" width="880">
 </p>
 
 ## How it works
 
 Each Markdown note (its title plus the first ~1500 characters of cleaned body text)
-is turned into a vector — a list of numbers that captures its meaning — by the
+is turned into a vector (a list of numbers that captures its meaning) by the
 embedding model. For the note you're viewing, every other note is ranked by
 **cosine similarity** to it, and the closest matches are shown as cards with a
 similarity percentage.
 
 The model runs through [`@huggingface/transformers`](https://www.npmjs.com/package/@huggingface/transformers)
-on the local ONNX runtime, on the **CPU via WASM** by default — multi-threaded so a
+on the local ONNX runtime, on the **CPU via WASM** by default, multi-threaded so a
 full reindex is quick, and memory-stable. (A **WebGPU** option exists and is faster,
 but its GPU backend can accumulate memory on large vaults, so it's an explicit opt-in.)
 An **Indexing speed** setting trades CPU threads against memory. The runtime's `.wasm`
@@ -46,25 +46,25 @@ restarts and only changed notes are re-embedded.
 
 ## Features
 
-- **Semantic ranking** — for the active note, ranks every other note by cosine
+- **Semantic ranking**: for the active note, ranks every other note by cosine
   similarity and shows the top matches as cards: **title**, muted **folder path**,
   a short **snippet**, and a **similarity %** pill. Click a card to open that note.
-- **Inline link suggestions** — when you mention a concept that already has a note, it
+- **Inline link suggestions**: when you mention a concept that already has a note, it
   glows with a slim underline; one click turns the mention into a `[[wikilink]]`. It's
   context-aware, so a common word (e.g. "analysis") only glows where it fits the topic,
   and works with or without the easy-links plugin.
-- **Fully local & private** — embeddings run in-app on the CPU (WASM, multi-threaded;
+- **Fully local & private**: embeddings run in-app on the CPU (WASM, multi-threaded;
   WebGPU optional); notes are never sent anywhere. Works offline after the one-time download.
-- **Multilingual** — a multilingual model matches notes across German, English, and
+- **Multilingual**: a multilingual model matches notes across German, English, and
   100+ other languages.
-- **Persisted index** — vectors are saved to disk, so reopening the vault is instant
+- **Persisted index**: vectors are saved to disk, so reopening the vault is instant
   and doesn't re-embed everything.
-- **Incremental updates** — changed, created, and renamed notes are re-embedded on a
+- **Incremental updates**: changed, created, and renamed notes are re-embedded on a
   20-second idle pause, so typing never kicks off work mid-edit.
-- **Keyword fallback** — while the index is still building (or for a brand-new note
+- **Keyword fallback**: while the index is still building (or for a brand-new note
   with no vector yet), the panel falls back to a cheap keyword / tag / link-overlap
-  ranking — shown with a `~` pill — so it's never empty.
-- **Clear status** — a live status line shows indexing progress; if the model can't
+  ranking (shown with a `~` pill), so it's never empty.
+- **Clear status**: a live status line shows indexing progress; if the model can't
   load (e.g. no connection on first run), it surfaces an error instead of silently
   showing nothing.
 
@@ -76,35 +76,35 @@ restarts and only changed notes are re-embedded.
 
 Next up, going beyond *reading* related notes to *tidying the graph* itself:
 
-- **Link recommendations** — find pairs of related notes that aren't linked yet and
+- **Link recommendations**: find pairs of related notes that aren't linked yet and
   suggest the connection, so you can build your graph with a click.
-- **Stale note finder** — surface orphaned and forgotten notes (nothing linking in or
+- **Stale note finder**: surface orphaned and forgotten notes (nothing linking in or
   out, or untouched for months) so good ideas don't get buried.
 
 ## Settings
 
-- **Performance profile** — one-click presets. **Balanced** is lighter and faster;
+- **Performance profile**: one-click presets. **Balanced** is lighter and faster;
   **Best quality** uses a larger model and more context for the strongest matches.
-- **Model** — the embedding model (a dropdown of vetted choices, or paste a custom
+- **Model**: the embedding model (a dropdown of vetted choices, or paste a custom
   Hugging Face id). The default `paraphrase-multilingual-MiniLM-L12-v2` is a
-  symmetric sentence-similarity model — the right tool for ranking how alike two
+  symmetric sentence-similarity model, the right tool for ranking how alike two
   notes are. `paraphrase-multilingual-mpnet-base-v2` (Best quality) is stronger but
   larger. e5 models are retrieval-oriented and rank note similarity less well.
-- **Compute device** — **Auto** (recommended) runs on the **CPU (WASM)**, which is
+- **Compute device**: **Auto** (recommended) runs on the **CPU (WASM)**, which is
   memory-stable. **WebGPU** is faster but its GPU backend can accumulate memory on
   large vaults, so it's an explicit opt-in. Switching re-downloads the model.
-- **Indexing speed** — CPU threads vs memory: **Fast** (all cores, quickest, but the
+- **Indexing speed**: CPU threads vs memory. **Fast** (all cores, quickest, but the
   worker threads hold several GB), **Balanced** (default), **Light** (1 thread, smallest
   footprint, slower full reindex). Editing a note stays fast at any setting.
-- **Number of results** — how many cards to show.
-- **Minimum similarity** — hide matches below this topical-similarity score (0–1).
+- **Number of results**: how many cards to show.
+- **Minimum similarity**: hide matches below this topical-similarity score (0–1).
   Scores are mean-centered (the embedding noise floor is removed), so unrelated notes
   sit near 0 and ~0.2 cleanly separates on-topic notes. Raise for a tighter list.
-- **Embed character limit** — how much of each note's body to embed after the title.
-- **Excluded folders** — folders to leave out of the index (and everything beneath
+- **Embed character limit**: how much of each note's body to embed after the title.
+- **Excluded folders**: folders to leave out of the index (and everything beneath
   them), one per line or comma-separated.
-- **Show snippet** — toggle the per-card text preview.
-- **Rebuild index** — force a full re-embed (also on the command palette and the
+- **Show snippet**: toggle the per-card text preview.
+- **Rebuild index**: force a full re-embed (also on the command palette and the
   panel's refresh icon).
 
 Changing the model or compute device transparently rebuilds the index; unrelated
@@ -116,7 +116,7 @@ changes (sliders, toggles) never trigger a re-embed.
 
 Download `smart-related-notes.zip` from the latest release and extract it into
 `.obsidian/plugins/smart-related-notes/`. The zip already includes the ONNX runtime
-`.wasm` in its `ort/` folder, so nothing extra is needed — only the model weights
+`.wasm` in its `ort/` folder, so nothing extra is needed. Only the model weights
 are fetched, once, on first use.
 
 ### With BRAT
@@ -154,7 +154,7 @@ and the `ort/` folder into `smart-related-notes.zip`.
 
 The renderer reports itself as a Node environment, which would otherwise make
 transformers.js pick the (externalized, unavailable) `onnxruntime-node` backend.
-`src/ort-shim.ts` — imported first in `main.ts` — installs the bundled
+`src/ort-shim.ts` (imported first in `main.ts`) installs the bundled
 `onnxruntime-web` under `Symbol.for("onnxruntime")` before transformers loads, so the
 web runtime is used and WebGPU/WASM work.
 
