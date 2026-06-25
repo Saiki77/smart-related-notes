@@ -31,10 +31,18 @@ export class RelatedNotesView extends ItemView {
   // tab switching) collapses into one ranking pass.
   private readonly scheduleRender: Debouncer<[], void>;
 
+  // Search box state (toggled by the header search icon).
+  private searchRowEl!: HTMLElement;
+  private searchInputEl!: HTMLInputElement;
+  private searchQuery = "";
+  private searchSeq = 0; // guards against stale async query results
+  private readonly scheduleSearch: Debouncer<[], void>;
+
   constructor(leaf: WorkspaceLeaf, plugin: RelatedNotesPlugin) {
     super(leaf);
     this.plugin = plugin;
     this.scheduleRender = debounce(() => this.render(), 300, false);
+    this.scheduleSearch = debounce(() => void this.runSearch(), 250, false);
   }
 
   getViewType(): string {
@@ -57,13 +65,47 @@ export class RelatedNotesView extends ItemView {
     const header = root.createDiv({ cls: "rn-header" });
     const titleRow = header.createDiv({ cls: "rn-title-row" });
     titleRow.createDiv({ cls: "rn-heading", text: "Smart related notes" });
-    const refresh = titleRow.createDiv({
+    const actions = titleRow.createDiv({ cls: "rn-actions" });
+    const searchToggle = actions.createDiv({
+      cls: "rn-search-toggle clickable-icon",
+      attr: { "aria-label": "Search notes" },
+    });
+    setIcon(searchToggle, "search");
+    searchToggle.addEventListener("click", () => this.toggleSearch());
+    const refresh = actions.createDiv({
       cls: "rn-refresh clickable-icon",
       attr: { "aria-label": "Rebuild the index" },
     });
     setIcon(refresh, "refresh-cw");
     refresh.addEventListener("click", () => {
       void this.plugin.rebuildIndex();
+    });
+
+    // Hidden until the search icon is clicked. Typing runs a semantic search.
+    this.searchRowEl = header.createDiv({ cls: "rn-search-row" });
+    this.searchInputEl = this.searchRowEl.createEl("input", {
+      cls: "rn-search-input",
+      attr: {
+        type: "text",
+        placeholder: "Search notes by meaning…",
+        "aria-label": "Search notes",
+        spellcheck: "false",
+      },
+    });
+    this.searchInputEl.addEventListener("input", () => {
+      this.searchQuery = this.searchInputEl.value.trim();
+      if (!this.searchQuery) {
+        this.scheduleSearch.cancel();
+        this.render();
+      } else {
+        this.scheduleSearch();
+      }
+    });
+    this.searchInputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        this.clearSearch();
+      }
     });
 
     this.subtitleEl = header.createDiv({ cls: "rn-subtitle" });
@@ -80,6 +122,9 @@ export class RelatedNotesView extends ItemView {
   protected async onClose(): Promise<void> {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    // Cancel armed debouncers so a timer can't fire into the torn-down view.
+    this.scheduleRender.cancel();
+    this.scheduleSearch.cancel();
   }
 
   // Public so the plugin can poke it on active-leaf-change.
@@ -113,6 +158,8 @@ export class RelatedNotesView extends ItemView {
 
   render(): void {
     if (!this.listEl) return;
+    // A search is active — its (async) results own the list; don't clobber them.
+    if (this.searchQuery) return;
     const active = this.app.workspace.getActiveFile();
     this.listEl.empty();
 
@@ -141,6 +188,59 @@ export class RelatedNotesView extends ItemView {
 
   private renderEmpty(text: string): void {
     this.listEl.createDiv({ cls: "rn-empty", text });
+  }
+
+  private toggleSearch(): void {
+    const willShow = !this.searchRowEl.hasClass("is-visible");
+    this.searchRowEl.toggleClass("is-visible", willShow);
+    if (willShow) {
+      window.setTimeout(() => this.searchInputEl.focus(), 0);
+    } else {
+      this.scheduleSearch.cancel();
+      this.searchInputEl.value = "";
+      this.searchQuery = "";
+      this.render();
+    }
+  }
+
+  private clearSearch(): void {
+    this.scheduleSearch.cancel();
+    this.searchInputEl.value = "";
+    this.searchQuery = "";
+    this.searchRowEl.removeClass("is-visible");
+    this.render();
+  }
+
+  // Semantic search: rank notes by similarity to the typed query (keyword fallback
+  // in the store when the engine isn't ready). Guarded against stale async results.
+  private async runSearch(): Promise<void> {
+    const query = this.searchQuery;
+    if (!query) {
+      this.render();
+      return;
+    }
+    const seq = ++this.searchSeq;
+    this.subtitleEl.empty();
+    this.subtitleEl.appendText("Search: ");
+    this.subtitleEl.createSpan({ cls: "rn-based-on", text: query });
+    let results: RankedNote[] = [];
+    try {
+      results = await this.plugin.store.rankByQuery(query);
+    } catch {
+      results = [];
+    }
+    if (seq !== this.searchSeq || this.searchQuery !== query) return; // superseded
+    this.listEl.empty();
+    if (results.length === 0) {
+      const status = this.plugin.store.getProgress().status;
+      this.renderEmpty(
+        status === "building" || status === "loading"
+          ? "Indexing… search results will improve as notes are added."
+          : "No matches found.",
+      );
+      return;
+    }
+    for (const item of results) this.renderCard(item);
   }
 
   // With no active note, surface recent notes so the panel stays useful: recently

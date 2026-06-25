@@ -672,6 +672,61 @@ export class IndexStore {
     return out;
   }
 
+  // --- semantic search (panel search box) ------------------------------------
+  // Rank notes by similarity of their (centered) mean to a free-text QUERY's
+  // embedding, on the same mean-centered scale as rank(). Falls back to a keyword
+  // match over paths when the engine can't embed yet (or the index is empty).
+  async rankByQuery(query: string): Promise<RankedNote[]> {
+    const q = query.trim();
+    if (!q) return [];
+    const entries = Array.from(this.entries.values());
+    if (entries.length === 0) return this.keywordRankQuery(q);
+    let vec: Float32Array;
+    try {
+      vec = await this.embedQuery(q);
+    } catch {
+      return this.keywordRankQuery(q);
+    }
+    const dims = entries[0].dims;
+    // A model/dim mismatch would score every note 0 (cosine of unequal lengths);
+    // fall back to keyword search rather than showing a misleading "no matches".
+    if (vec.length !== dims) return this.keywordRankQuery(q);
+    const qVec = this.centroid ? centerVector(vec, this.centroid, dims) : vec;
+    const scored: { entry: IndexEntry; score: number }[] = [];
+    for (const entry of entries) {
+      if (entry.dims !== dims) continue;
+      scored.push({ entry, score: cosineSimilarity(qVec, this.centeredMean(entry)) });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    // Lenient floor (looser than the panel's minSimilarity) so an explicit search
+    // still surfaces moderate matches, but drops the near-zero unrelated tail.
+    const floor = Math.min(this.options.minSimilarity, 0.12);
+    const out: RankedNote[] = [];
+    for (const { entry, score } of scored) {
+      if (score < floor) break;
+      const file = this.app.vault.getAbstractFileByPath(entry.path);
+      if (file instanceof TFile) out.push({ file, score, approximate: false });
+      if (out.length >= this.options.topK) break;
+    }
+    return out;
+  }
+
+  // Keyword fallback for the search box: query tokens matched against note paths.
+  private keywordRankQuery(query: string): RankedNote[] {
+    const tokens = query.toLowerCase().split(/\s+/).filter((t) => t.length > 1);
+    if (tokens.length === 0) return [];
+    const scored: RankedNote[] = [];
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (this.isExcluded(file.path)) continue;
+      const hay = file.path.toLowerCase();
+      let hits = 0;
+      for (const t of tokens) if (hay.includes(t)) hits += 1;
+      if (hits > 0) scored.push({ file, score: hits / tokens.length, approximate: true });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, this.options.topK);
+  }
+
   // Swap the embedding engine in place and drop every vector (a different model or
   // device invalidates them all). Keeps the same listener Set, so a view already
   // subscribed to this store keeps receiving the rebuild's progress. The caller

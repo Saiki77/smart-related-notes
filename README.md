@@ -50,6 +50,9 @@ restarts and only changed notes are re-embedded.
   similarity and shows the top matches as cards: **title**, muted **folder path**,
   a short **snippet**, and a **similarity %** pill. Click a card to open that note.
   With no note open, the panel lists your **recent notes** instead of sitting empty.
+- **Semantic search**: the magnifier in the panel header opens a search box that ranks
+  your whole vault by meaning against a typed query (e.g. "goa characters" or
+  "proofwork"), not just keyword matches.
 - **Inline link suggestions**: when you mention a concept that already has a note, it
   glows with a slim underline; one click turns the mention into a `[[wikilink]]`. It's
   context-aware, so a common word (e.g. "analysis") only glows where it fits the topic,
