@@ -977,12 +977,51 @@ export class IndexStore {
     // fall back to keyword search rather than showing a misleading "no matches".
     if (vec.length !== dims) return this.keywordRankQuery(q);
     const qVec = this.centroid ? centerVector(vec, this.centroid, dims) : vec;
-    const scored: { entry: IndexEntry; score: number }[] = [];
+
+    // How much the note MEAN counts vs the best single PASSAGE, and how much a
+    // literal title/path word match lifts a result. Search wants the note that
+    // actually discusses the query — which may be one passage of an otherwise
+    // off-topic note (best-passage), or the note literally named like the query
+    // (lexical), not just the note whose overall gist is nearest.
+    const MEAN_WEIGHT = 0.4;
+    const LEX_BOOST = 0.25;
+    const qTokens = q.toLowerCase().split(/\s+/).filter((t) => t.length > 1);
+
+    // Stage 1: mean-cosine shortlist (topical candidates), so the per-passage pass
+    // only dequantizes a bounded set.
+    const coarse: { entry: IndexEntry; mean: number }[] = [];
     for (const entry of entries) {
       if (entry.dims !== dims) continue;
-      scored.push({ entry, score: cosineSimilarity(qVec, this.centeredMean(entry)) });
+      coarse.push({ entry, mean: cosineSimilarity(qVec, this.centeredMean(entry)) });
+    }
+    coarse.sort((a, b) => b.mean - a.mean);
+    const width = Math.max(
+      this.options.topK * 4,
+      this.options.shortlistSize || DEFAULT_SHORTLIST,
+    );
+
+    // Stage 2: re-rank by best passage (blended with the mean) + a lexical title boost.
+    const scored: { entry: IndexEntry; score: number }[] = [];
+    for (const { entry, mean } of coarse.slice(0, width)) {
+      let best = mean;
+      if (entry.chunkCount > 0) {
+        const chunks = this.dequant.get(entry);
+        for (let i = 0; i < entry.chunkCount; i++) {
+          const d = dotRow(chunks, i, qVec, dims);
+          if (d > best) best = d;
+        }
+      }
+      let semantic = MEAN_WEIGHT * mean + (1 - MEAN_WEIGHT) * best;
+      if (qTokens.length > 0) {
+        const hay = entry.path.toLowerCase();
+        let hits = 0;
+        for (const t of qTokens) if (hay.includes(t)) hits++;
+        semantic = Math.min(1, semantic + LEX_BOOST * (hits / qTokens.length));
+      }
+      scored.push({ entry, score: semantic });
     }
     scored.sort((a, b) => b.score - a.score);
+
     // Lenient floor (looser than the panel's minSimilarity) so an explicit search
     // still surfaces moderate matches, but drops the near-zero unrelated tail.
     const floor = Math.min(this.options.minSimilarity, 0.12);
