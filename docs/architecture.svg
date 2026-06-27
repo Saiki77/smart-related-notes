@@ -20,20 +20,20 @@ text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
 <text class="mut tMut" x="40" y="144">nothing labels it. the embedding model places every note by what its words mean.</text>
 <rect class="cI" x="40" y="164" width="170" height="60" rx="10"/><text class="bx tInk" x="125" y="189" text-anchor="middle">Frodo</text><text class="chp tMut" x="125" y="208" text-anchor="middle">hobbit · loyal · a journey</text>
 <rect class="cI" x="40" y="244" width="170" height="60" rx="10"/><text class="bx tInk" x="125" y="269" text-anchor="middle">The One Ring</text><text class="chp tMut" x="125" y="288" text-anchor="middle">forged · golden · an artifact</text>
-<text class="mut tMut" x="218" y="230">embed</text>
-<line class="arw" x1="214" y1="238" x2="276" y2="238" marker-end="url(#m)"/>
-<rect class="map" x="280" y="158" width="360" height="180" rx="12"/>
-<text class="mut tMut" x="296" y="180">embedding space · position = meaning</text>
-<rect class="cA" x="296" y="190" width="160" height="138" rx="12"/>
-<text class="sh tA" x="308" y="210">characters</text>
-<rect class="hiA" x="308" y="218" width="136" height="22" rx="6"/><text class="chp tA" x="376" y="233" text-anchor="middle">Frodo</text>
-<rect class="chip" x="308" y="246" width="136" height="22" rx="6"/><text class="chp tA" x="376" y="261" text-anchor="middle">Gandalf</text>
-<rect class="chip" x="308" y="274" width="136" height="22" rx="6"/><text class="chp tA" x="376" y="289" text-anchor="middle">Aragorn</text>
-<rect class="cC" x="466" y="190" width="158" height="138" rx="12"/>
-<text class="sh tC" x="478" y="210">items</text>
-<rect class="hiC" x="478" y="218" width="134" height="22" rx="6"/><text class="chp tC" x="545" y="233" text-anchor="middle">The One Ring</text>
-<rect class="chip" x="478" y="246" width="134" height="22" rx="6"/><text class="chp tC" x="545" y="261" text-anchor="middle">Mithril</text>
-<rect class="chip" x="478" y="274" width="134" height="22" rx="6"/><text class="chp tC" x="545" y="289" text-anchor="middle">Andúril</text>
+<text class="mut tMut" x="212" y="230">embed</text>
+<line class="arw" x1="212" y1="238" x2="244" y2="238" marker-end="url(#m)"/>
+<rect class="map" x="250" y="158" width="390" height="180" rx="12"/>
+<text class="mut tMut" x="266" y="180">embedding space · position = meaning</text>
+<rect class="cA" x="268" y="190" width="150" height="138" rx="12"/>
+<text class="sh tA" x="280" y="210">characters</text>
+<rect class="hiA" x="280" y="218" width="126" height="22" rx="6"/><text class="chp tA" x="343" y="233" text-anchor="middle">Frodo</text>
+<rect class="chip" x="280" y="246" width="126" height="22" rx="6"/><text class="chp tA" x="343" y="261" text-anchor="middle">Gandalf</text>
+<rect class="chip" x="280" y="274" width="126" height="22" rx="6"/><text class="chp tA" x="343" y="289" text-anchor="middle">Aragorn</text>
+<rect class="cC" x="472" y="190" width="150" height="138" rx="12"/>
+<text class="sh tC" x="484" y="210">items</text>
+<rect class="hiC" x="484" y="218" width="126" height="22" rx="6"/><text class="chp tC" x="547" y="233" text-anchor="middle">The One Ring</text>
+<rect class="chip" x="484" y="246" width="126" height="22" rx="6"/><text class="chp tC" x="547" y="261" text-anchor="middle">Mithril</text>
+<rect class="chip" x="484" y="274" width="126" height="22" rx="6"/><text class="chp tC" x="547" y="289" text-anchor="middle">Andúril</text>
 <text class="mut tMut" x="40" y="362">The Ring's note is about an OBJECT (forged, golden, an artifact), so its vector lands among the items;</text>
 <text class="mut tMut" x="40" y="380">Frodo's is about a PERSON, so his lands among the characters. Same model, no tags, no rules.</text>
 <line class="div" x1="40" y1="400" x2="640" y2="400"/>
