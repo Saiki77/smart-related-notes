@@ -78,15 +78,36 @@ export class TitleIndex {
   private rebuild(): void {
     const map = new Map<string, TFile[]>();
     const excluded = this.excludedFolders();
+    // Exact surfaces (basenames + aliases) recorded so a second pass can add
+    // singular/plural variants WITHOUT ever overriding a real title/alias.
+    const exact: Array<[string, TFile]> = [];
     for (const file of this.app.vault.getMarkdownFiles()) {
       if (isInExcludedFolder(file.path, excluded)) continue;
-      this.addSurface(map, file.basename, file);
+      const b = this.addSurface(map, file.basename, file);
+      if (b) exact.push([b, file]);
       const cache = this.app.metadataCache.getFileCache(file);
       const aliases = cache ? parseFrontMatterAliases(cache.frontmatter) ?? [] : [];
       for (const alias of aliases) {
-        if (typeof alias === "string") this.addSurface(map, alias, file);
+        if (typeof alias !== "string") continue;
+        const a = this.addSurface(map, alias, file);
+        if (a) exact.push([a, file]);
       }
     }
+    // Second pass: English singular/plural variants of every exact surface, so a
+    // mention of "embedding" still links a note aliased "embeddings". A variant
+    // is added ONLY for a key no exact surface owns (an exact title/alias always
+    // wins), and a variant that two notes both generate is left AMBIGUOUS so the
+    // passive glow skips it (precision over recall).
+    const variantOwners = new Map<string, Set<TFile>>();
+    for (const [surface, file] of exact) {
+      for (const v of inflectVariants(surface)) {
+        if (v.length < MIN_SURFACE_CHARS || map.has(v)) continue;
+        let owners = variantOwners.get(v);
+        if (!owners) variantOwners.set(v, (owners = new Set()));
+        owners.add(file);
+      }
+    }
+    for (const [v, owners] of variantOwners) map.set(v, [...owners]);
     this.surfaceToFiles = map;
     this.dirty = false;
     // A rebuilt map invalidates any cached alternation.
@@ -94,19 +115,22 @@ export class TitleIndex {
     this.compiledForPath = null;
   }
 
+  // Add one normalized surface -> file. Returns the normalized surface (so the
+  // caller can derive variants from it), or null when it was too short to index.
   private addSurface(
     map: Map<string, TFile[]>,
     surfaceRaw: string,
     file: TFile,
-  ): void {
+  ): string | null {
     const surface = this.normalize(surfaceRaw);
-    if (surface.length < MIN_SURFACE_CHARS) return;
+    if (surface.length < MIN_SURFACE_CHARS) return null;
     const existing = map.get(surface);
     if (existing) {
       if (!existing.includes(file)) existing.push(file);
     } else {
       map.set(surface, [file]);
     }
+    return surface;
   }
 
   private ensureFresh(): void {
@@ -216,6 +240,23 @@ export class TitleIndex {
 // Escape a string for literal use inside a RegExp.
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// English singular<->plural variants of a normalized surface, so a mention of
+// "embedding" still links a note aliased "embeddings" (and vice versa). It
+// inflects the surface's trailing characters with the common regular rules only.
+// Callers add a variant ONLY when no exact title/alias claims that key, so the
+// occasional bogus form (irregular or non-English plurals, e.g. German) is
+// harmless: it simply never appears in real prose and so never glows.
+function inflectVariants(s: string): string[] {
+  if (s.length < 4) return [];
+  if (/[^aeiou]y$/.test(s)) return [s.slice(0, -1) + "ies"]; // category -> categories
+  if (/ies$/.test(s)) return [s.slice(0, -3) + "y"]; // categories -> category
+  if (/(ss|x|z|ch|sh)es$/.test(s)) return [s.slice(0, -2)]; // boxes -> box, dishes -> dish
+  if (/(ss|us|is)$/.test(s)) return [s + "es"]; // class -> classes, bus -> buses
+  if (/s$/.test(s)) return [s.slice(0, -1)]; // embeddings -> embedding
+  if (/(x|z|ch|sh)$/.test(s)) return [s + "es"]; // box -> boxes
+  return [s + "s"]; // embedding -> embeddings
 }
 
 // True when the path is inside one of the excluded folders (or equals it).
