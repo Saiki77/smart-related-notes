@@ -37,7 +37,7 @@ heading and topic boundaries, with short atomic notes kept whole), so a note is
 represented at three levels: an **overall vector**, its **idea vectors**, and its
 **passage vectors**. For the note you're viewing, every other note is ranked by the
 best **cosine similarity** of their passages (with its title weighted), blended with
-how strongly the two notes share a whole **idea** — so a note related by one coherent
+how strongly the two notes share a whole **idea**, so a note related by one coherent
 idea spanning several paragraphs surfaces, not just one lucky passage match. The
 closest matches are shown as cards with a similarity percentage.
 
@@ -53,9 +53,9 @@ cached and nothing is fetched again.
 Vectors persist as compact JSON in the plugin's config dir, so the index survives
 restarts and only changed notes are re-embedded.
 
-For the full picture — the multi-granularity embeddings, the multi-stage ranking
-funnel, the measured model A/B, mean-centering, and the roadmap toward tag-free concept
-search — see [ARCHITECTURE.md](ARCHITECTURE.md).
+For the full picture, see [ARCHITECTURE.md](ARCHITECTURE.md): the multi-granularity
+embeddings, the multi-stage ranking funnel, the measured model A/B, mean-centering, and
+the roadmap toward tag-free concept search.
 
 ## Features
 
@@ -117,13 +117,13 @@ Next up, going beyond *reading* related notes to *tidying the graph* itself:
   worker threads hold several GB), **Balanced** (default), **Light** (1 thread, smallest
   footprint, slower full reindex). Editing a note stays fast at any setting.
 - **Number of results**: how many cards to show.
-- **Minimum similarity**: hide matches below this topical-similarity score (0–1).
+- **Minimum similarity**: hide matches below this topical-similarity score (0-1).
   Scores are mean-centered (the embedding noise floor is removed), so unrelated notes
   sit near 0 and ~0.2 cleanly separates on-topic notes. Raise for a tighter list.
 - **Idea influence**: how much idea-level matching blends into the score (0-0.6).
   Notes are grouped into coherent ideas (~200-500 words); this weights whether two
   notes share a whole idea, not just one passage. 0 is passage-only. It is a live
-  ranking knob — changing it re-ranks instantly with no re-index, so you can compare.
+  ranking knob; changing it re-ranks instantly with no re-index, so you can compare.
 - **Isolated areas**: self-contained areas, one tag namespace per line (e.g. `goa`).
   A note tagged with an activated namespace (matching `goa` and `goa/character`) only
   relates to, and takes tag suggestions from, other notes in that area, and never

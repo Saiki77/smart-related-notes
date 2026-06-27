@@ -4,25 +4,16 @@
 <style>
 text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
 .h{font-size:20px;font-weight:600;}.sh{font-size:15px;font-weight:600;}.mut{font-size:12px;}.bx{font-size:13px;font-weight:600;}.chp{font-size:11px;}
-.bgbase{fill:#0f141b;}.bg{fill:#0f141b;stroke:#2a313c;}.map{fill:none;stroke:#30363d;}.div{stroke:#30363d;}
+.map{fill:none;stroke:#30363d;}.div{stroke:#30363d;}
 .cA{fill:#16233f;stroke:#5b8def;}.cB{fill:#0c2a27;stroke:#2dd4bf;}.cC{fill:#342810;stroke:#fbbf24;}.cG{fill:#11301d;stroke:#4ade80;}.cI{fill:#1f2733;stroke:#64748b;}
-.chip{fill:#0d1117;stroke:#30363d;}.hiA{fill:#0d1117;stroke:#5b8def;stroke-width:2;}.hiC{fill:#0d1117;stroke:#fbbf24;stroke-width:2;}
+.chip{fill:#161b22;stroke:#30363d;}.hiA{fill:#161b22;stroke:#5b8def;stroke-width:2;}.hiC{fill:#161b22;stroke:#fbbf24;stroke-width:2;}
 .tInk{fill:#e6edf3;}.tMut{fill:#9aa4b2;}.tA{fill:#bcd0ff;}.tB{fill:#99f6e4;}.tC{fill:#fde68a;}.tG{fill:#86efac;}.tI{fill:#cbd5e1;}
 .arw{stroke:#6b7280;stroke-width:1.5;fill:none;}.arwf{fill:#6b7280;}
-@media (prefers-color-scheme:light){
-.bgbase{fill:#ffffff;}.bg{fill:#ffffff;stroke:#d0d7de;}.map{stroke:#d1d5db;}.div{stroke:#e5e7eb;}
-.cA{fill:#e8f0fe;stroke:#4285f4;}.cB{fill:#ddf5f0;stroke:#14b8a6;}.cC{fill:#fdf0d8;stroke:#f59e0b;}.cG{fill:#e6f4ea;stroke:#34a853;}.cI{fill:#eef1f4;stroke:#94a3b8;}
-.chip{fill:#ffffff;stroke:#e5e7eb;}.hiA{fill:#ffffff;stroke:#4285f4;stroke-width:2;}.hiC{fill:#ffffff;stroke:#f59e0b;stroke-width:2;}
-.tInk{fill:#1f2937;}.tMut{fill:#586273;}.tA{fill:#1a3a8f;}.tB{fill:#0f5f57;}.tC{fill:#8a5a06;}.tG{fill:#1e6b34;}.tI{fill:#475569;}
-.arw{stroke:#9ca3af;}.arwf{fill:#9ca3af;}
-}
 </style>
 <defs><marker id="m" markerWidth="8" markerHeight="8" refX="5.5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" class="arwf"/></marker></defs>
-<rect class="bgbase" x="0" y="0" width="680" height="1430"/>
-<rect class="bg" x="1" y="1" width="678" height="1428" rx="14"/>
 
 <text class="h tInk" x="40" y="46">How Smart Related Notes works</text>
-<text class="mut tMut" x="40" y="70">it finds related notes by meaning, and infers your vault's structure from almost nothing. all local, all offline.</text>
+<text class="mut tMut" x="40" y="70">it finds related notes by meaning, and infers your vault's structure without tags or links. local and offline.</text>
 <line class="div" x1="40" y1="90" x2="640" y2="90"/>
 
 <text class="sh tInk" x="40" y="122">1 · How does it know the One Ring is an item, not a character?</text>
@@ -80,7 +71,7 @@ text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
 <rect class="cC" x="40" y="886" width="14" height="14" rx="3"/><text class="bx tInk" x="62" y="898">structure</text><text class="mut tMut" x="140" y="898">near notes form clusters = the categories; a query expands into one to list its members.</text>
 <line class="div" x1="40" y1="926" x2="640" y2="926"/>
 
-<text class="sh tInk" x="40" y="958">4 · The payoff: answering a category query</text>
+<text class="sh tInk" x="40" y="958">4 · Answering a category query</text>
 <text class="mut tMut" x="40" y="980">"characters" should return the members, not the note ABOUT them, even with no tags or links</text>
 <rect class="map" x="40" y="996" width="600" height="300" rx="12"/>
 <text class="mut tMut" x="56" y="1016">your vault in embedding space</text>
