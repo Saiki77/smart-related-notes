@@ -1,0 +1,111 @@
+<svg viewBox="0 0 1340 770" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>How Smart Related Notes works (landscape): mechanism, pipeline, vectors to ranks, and concept search</title>
+<desc>A two-column landscape version. Left: how the embedding model infers the One Ring is an item, and the chunk-embed-rank pipeline. Right: how vectors become ranks and clusters, and concept search returning member notes.</desc>
+<style>
+text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
+.h{font-size:22px;font-weight:600;}.sh{font-size:15px;font-weight:600;}.mut{font-size:12px;}.bx{font-size:13px;font-weight:600;}.chp{font-size:11px;}
+.map{fill:none;stroke:#30363d;}.div{stroke:#30363d;}
+.cA{fill:#16233f;stroke:#5b8def;}.cB{fill:#0c2a27;stroke:#2dd4bf;}.cC{fill:#342810;stroke:#fbbf24;}.cG{fill:#11301d;stroke:#4ade80;}.cI{fill:#1f2733;stroke:#64748b;}
+.chip{fill:#161b22;stroke:#30363d;}.cloudA{fill:none;stroke:#5b8def;stroke-dasharray:5 4;}.cloudC{fill:none;stroke:#fbbf24;stroke-dasharray:5 4;}.dA{fill:#5b8def;}.dC{fill:#fbbf24;}.ringA{fill:none;stroke:#5b8def;stroke-width:1.5;}.ringC{fill:none;stroke:#fbbf24;stroke-width:1.5;}
+.tInk{fill:#e6edf3;}.tMut{fill:#9aa4b2;}.tA{fill:#bcd0ff;}.tB{fill:#99f6e4;}.tC{fill:#fde68a;}.tG{fill:#86efac;}.tI{fill:#cbd5e1;}
+.arw{stroke:#6b7280;stroke-width:1.5;fill:none;}.arwf{fill:#6b7280;}
+</style>
+<defs><marker id="m" markerWidth="8" markerHeight="8" refX="5.5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" class="arwf"/></marker></defs>
+<rect x="0" y="0" width="1340" height="770" fill="#0d1117"/>
+
+<text class="h tInk" x="40" y="48">How Smart Related Notes works</text>
+<text class="mut tMut" x="40" y="72">it finds related notes by meaning, and infers your vault's structure with no tags or links. local and offline.</text>
+<line class="div" x1="40" y1="92" x2="1300" y2="92"/>
+<line class="div" x1="630" y1="112" x2="630" y2="740"/>
+
+<g transform="translate(40,118)">
+<text class="sh tInk" x="0" y="22">1 · How it knows the Ring is an item, not a character</text>
+<text class="mut tMut" x="0" y="44">nothing labels it. it places every note by what its words mean.</text>
+<rect class="cI" x="0" y="62" width="164" height="54" rx="10"/><text class="bx tInk" x="82" y="85" text-anchor="middle">Frodo</text><text class="chp tMut" x="82" y="102" text-anchor="middle">hobbit · loyal · journey</text>
+<rect class="cI" x="0" y="132" width="164" height="54" rx="10"/><text class="bx tInk" x="82" y="155" text-anchor="middle">The One Ring</text><text class="chp tMut" x="82" y="172" text-anchor="middle">forged · golden · artifact</text>
+<text class="mut tMut" x="174" y="120">embed</text>
+<line class="arw" x1="172" y1="128" x2="202" y2="128" marker-end="url(#m)"/>
+<rect class="map" x="208" y="56" width="372" height="182" rx="12"/>
+<text class="mut tMut" x="224" y="78">embedding space · position = meaning</text>
+<text class="sh tA" x="248" y="104">characters</text>
+<text class="sh tC" x="448" y="104">items</text>
+<ellipse class="cloudA" cx="300" cy="170" rx="80" ry="54"/>
+<ellipse class="cloudC" cx="498" cy="170" rx="80" ry="54"/>
+<circle class="ringA" cx="272" cy="146" r="9"/><circle class="dA" cx="272" cy="146" r="5"/><text class="chp tA" x="284" y="150">Frodo</text>
+<circle class="dA" cx="330" cy="164" r="4"/><text class="chp tA" x="339" y="168">Gandalf</text>
+<circle class="dA" cx="296" cy="198" r="4"/><text class="chp tA" x="305" y="202">Aragorn</text>
+<circle class="ringC" cx="470" cy="146" r="9"/><circle class="dC" cx="470" cy="146" r="5"/><text class="chp tC" x="482" y="150">The One Ring</text>
+<circle class="dC" cx="536" cy="164" r="4"/><text class="chp tC" x="545" y="168">Mithril</text>
+<circle class="dC" cx="490" cy="198" r="4"/><text class="chp tC" x="499" y="202">Andúril</text>
+<text class="mut tMut" x="0" y="258">the Ring's words are about an OBJECT, so it lands among items;</text>
+<text class="mut tMut" x="0" y="276">a PERSON note lands among characters. no tags, no rules.</text>
+</g>
+
+<g transform="translate(40,426)">
+<text class="sh tInk" x="0" y="22">2 · How a note becomes vectors</text>
+<text class="mut tMut" x="0" y="44">split along its own structure, then embedded at three levels</text>
+<text class="mut tMut" x="0" y="68">chunk · structure-aware</text>
+<rect class="cA" x="0" y="78" width="80" height="44" rx="8"/><text class="bx tA" x="40" y="100" text-anchor="middle">Note</text><text class="chp tA" x="40" y="114" text-anchor="middle">title, body, tags</text>
+<rect class="cA" x="100" y="78" width="98" height="44" rx="8"/><text class="bx tA" x="149" y="100" text-anchor="middle">Sections</text><text class="chp tA" x="149" y="114" text-anchor="middle">by heading</text>
+<rect class="cA" x="218" y="78" width="98" height="44" rx="8"/><text class="bx tA" x="267" y="100" text-anchor="middle">Ideas</text><text class="chp tA" x="267" y="114" text-anchor="middle">~200-500 words</text>
+<rect class="cA" x="336" y="78" width="120" height="44" rx="8"/><text class="bx tA" x="396" y="100" text-anchor="middle">Passages</text><text class="chp tA" x="396" y="114" text-anchor="middle">token-safe windows</text>
+<line class="arw" x1="80" y1="100" x2="98" y2="100" marker-end="url(#m)"/>
+<line class="arw" x1="198" y1="100" x2="216" y2="100" marker-end="url(#m)"/>
+<line class="arw" x1="316" y1="100" x2="334" y2="100" marker-end="url(#m)"/>
+<line class="arw" x1="228" y1="122" x2="228" y2="142" marker-end="url(#m)"/>
+<text class="mut tMut" x="0" y="158">embed · multi-granularity · int8 chunks · mean-centered</text>
+<rect class="cB" x="0" y="168" width="176" height="44" rx="8"/><text class="bx tB" x="88" y="190" text-anchor="middle">Whole-note vector</text><text class="chp tB" x="88" y="204" text-anchor="middle">the note's gist</text>
+<rect class="cB" x="196" y="168" width="148" height="44" rx="8"/><text class="bx tB" x="270" y="190" text-anchor="middle">Idea vectors</text><text class="chp tB" x="270" y="204" text-anchor="middle">one per idea</text>
+<rect class="cB" x="364" y="168" width="176" height="44" rx="8"/><text class="bx tB" x="452" y="190" text-anchor="middle">Passage vectors</text><text class="chp tB" x="452" y="204" text-anchor="middle">fine detail</text>
+<line class="arw" x1="228" y1="212" x2="228" y2="232" marker-end="url(#m)"/>
+<text class="mut tMut" x="0" y="248">rank · multi-stage funnel</text>
+<rect class="cA" x="0" y="258" width="120" height="44" rx="8"/><text class="bx tA" x="60" y="280" text-anchor="middle">Stage 1</text><text class="chp tA" x="60" y="294" text-anchor="middle">overall cosine</text>
+<rect class="cA" x="140" y="258" width="146" height="44" rx="8"/><text class="bx tA" x="213" y="280" text-anchor="middle">Stage 2</text><text class="chp tA" x="213" y="294" text-anchor="middle">best idea / passage</text>
+<rect class="cA" x="306" y="258" width="106" height="44" rx="8"/><text class="bx tA" x="359" y="280" text-anchor="middle">+ boost</text><text class="chp tA" x="359" y="294" text-anchor="middle">links, tags</text>
+<rect class="cG" x="432" y="258" width="108" height="44" rx="8"/><text class="bx tG" x="486" y="280" text-anchor="middle">Cards</text><text class="chp tG" x="486" y="294" text-anchor="middle">ranked</text>
+<line class="arw" x1="120" y1="280" x2="138" y2="280" marker-end="url(#m)"/>
+<line class="arw" x1="286" y1="280" x2="304" y2="280" marker-end="url(#m)"/>
+<line class="arw" x1="412" y1="280" x2="430" y2="280" marker-end="url(#m)"/>
+</g>
+
+<g transform="translate(700,118)">
+<text class="sh tInk" x="0" y="22">3 · From vectors to ranks and structure</text>
+<text class="mut tMut" x="0" y="44">three things follow from the geometry alone</text>
+<rect class="cI" x="0" y="58" width="14" height="14" rx="3"/><text class="bx tInk" x="22" y="70">center</text><text class="mut tMut" x="100" y="70">subtract the average note; the shared theme cancels, leaving meaning.</text>
+<rect class="cA" x="0" y="90" width="14" height="14" rx="3"/><text class="bx tInk" x="22" y="102">rank</text><text class="mut tMut" x="100" y="102">the nearest vectors are the most related; that is the card list.</text>
+<rect class="cC" x="0" y="122" width="14" height="14" rx="3"/><text class="bx tInk" x="22" y="134">structure</text><text class="mut tMut" x="100" y="134">near notes form clusters = the categories a query expands into.</text>
+</g>
+
+<g transform="translate(700,286)">
+<text class="sh tInk" x="0" y="22">4 · Answering a category query</text>
+<text class="mut tMut" x="0" y="44">"characters" should return the members, not the note ABOUT them</text>
+<rect class="map" x="0" y="56" width="540" height="250" rx="12"/>
+<text class="mut tMut" x="16" y="78">your vault in embedding space</text>
+<rect class="cA" x="24" y="90" width="230" height="150" rx="12"/>
+<text class="sh tA" x="36" y="110">characters</text>
+<rect class="chip" x="36" y="118" width="100" height="22" rx="6"/><text class="chp tA" x="86" y="133" text-anchor="middle">Frodo</text>
+<rect class="chip" x="36" y="146" width="100" height="22" rx="6"/><text class="chp tA" x="86" y="161" text-anchor="middle">Gandalf</text>
+<rect class="chip" x="36" y="174" width="100" height="22" rx="6"/><text class="chp tA" x="86" y="189" text-anchor="middle">Aragorn</text>
+<rect class="chip" x="144" y="118" width="100" height="22" rx="6"/><text class="chp tA" x="194" y="133" text-anchor="middle">Samwise</text>
+<rect class="chip" x="144" y="146" width="100" height="22" rx="6"/><text class="chp tA" x="194" y="161" text-anchor="middle">Gollum</text>
+<rect class="cB" x="270" y="90" width="246" height="96" rx="12"/>
+<text class="sh tB" x="282" y="110">locations</text>
+<rect class="chip" x="282" y="118" width="106" height="22" rx="6"/><text class="chp tB" x="335" y="133" text-anchor="middle">The Shire</text>
+<rect class="chip" x="282" y="146" width="106" height="22" rx="6"/><text class="chp tB" x="335" y="161" text-anchor="middle">Rivendell</text>
+<rect class="chip" x="398" y="118" width="106" height="22" rx="6"/><text class="chp tB" x="451" y="133" text-anchor="middle">Mordor</text>
+<rect class="cC" x="270" y="200" width="246" height="84" rx="12"/>
+<text class="sh tC" x="282" y="220">items</text>
+<rect class="chip" x="282" y="228" width="106" height="22" rx="6"/><text class="chp tC" x="335" y="243" text-anchor="middle">The One Ring</text>
+<rect class="chip" x="398" y="228" width="106" height="22" rx="6"/><text class="chp tC" x="451" y="243" text-anchor="middle">Mithril</text>
+<rect class="cI" x="40" y="252" width="206" height="22" rx="11"/><text class="chp tI" x="143" y="267" text-anchor="middle">Characters of Middle-earth (index)</text>
+<text class="mut tMut" x="0" y="328">how "characters" resolves to its members:</text>
+<rect class="cI" x="0" y="338" width="104" height="44" rx="8"/><text class="bx tInk" x="52" y="360" text-anchor="middle">query</text><text class="chp tMut" x="52" y="375" text-anchor="middle">"characters"</text>
+<line class="arw" x1="104" y1="360" x2="122" y2="360" marker-end="url(#m)"/>
+<rect class="cI" x="124" y="338" width="126" height="44" rx="8"/><text class="bx tI" x="187" y="360" text-anchor="middle">naive hit</text><text class="chp tMut" x="187" y="375" text-anchor="middle">the index note</text>
+<line class="arw" x1="250" y1="360" x2="268" y2="360" marker-end="url(#m)"/>
+<rect class="cC" x="270" y="338" width="120" height="44" rx="8"/><text class="bx tC" x="330" y="360" text-anchor="middle">expand</text><text class="chp tC" x="330" y="375" text-anchor="middle">to the members</text>
+<line class="arw" x1="390" y1="360" x2="408" y2="360" marker-end="url(#m)"/>
+<rect class="cA" x="410" y="338" width="120" height="44" rx="8"/><text class="bx tA" x="470" y="360" text-anchor="middle">members</text><text class="chp tA" x="470" y="375" text-anchor="middle">Frodo, Gandalf…</text>
+<text class="mut tMut" x="0" y="402">concept search is in design; everything above ships today.</text>
+</g>
+</svg>
