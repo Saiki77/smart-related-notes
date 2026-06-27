@@ -520,6 +520,10 @@ export default class RelatedNotesPlugin extends Plugin {
   // (not the cheap mtime-reuse build), so it always reflects the current model and
   // settings instead of finishing instantly with the old vectors.
   async rebuildIndex(): Promise<void> {
+    if (!this.settings.modelChosen) {
+      new Notice("Smart Related Notes: pick an embedding model in Settings first.", 8000);
+      return;
+    }
     await this.store.build(undefined, true);
     this.getView()?.requestRender();
   }
@@ -611,6 +615,12 @@ export default class RelatedNotesPlugin extends Plugin {
   }
 
   private async flushDirty(): Promise<void> {
+    // First-run gate: never embed (which would download the default model) before the
+    // user has picked a model. Picking one runs a full build over all notes anyway.
+    if (!this.settings.modelChosen) {
+      this.dirty.clear();
+      return;
+    }
     if (this.dirty.size === 0) return;
     const paths = Array.from(this.dirty);
     this.dirty.clear();

@@ -155,6 +155,9 @@ export class SmartLinkSuggester extends EditorSuggest<Item> {
     try {
       const trimmed = ctx.text.trim();
       if (trimmed.length === 0) return;
+      // First-run gate: don't pull model weights before the user has chosen a model.
+      // Leaving contextVec null falls back to the recency ordering.
+      if (!this.plugin.settings.modelChosen) return;
       const vec = await this.plugin.store.embedQuery(trimmed);
       this.contextVec = vec;
       this.contextKey = ctx.hash;

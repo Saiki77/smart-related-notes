@@ -82,7 +82,11 @@ const EMPTY_AREAS: ReadonlySet<string> = new Set<string>(); // shared "no isolat
 // is a SINGLE embed of (title + tags + cleaned body) capped to a token-safe char
 // budget; each IDEA is then embedded WHOLE (it fits the model's window) as a stored
 // chunk, so idea-level matching is preserved at the better model's quality.
-const WHOLE_NOTE_CHARS = 14000; // ~5-7k tokens (EN/DE) — safely under an 8192 window
+// Whole-note embed cap. The single-input last-token path applies NO tokenizer
+// truncation (max_length resolves to the input's own length), so this char cap is the
+// only length limit. Kept modest so a token-dense note (CJK/code) stays under the
+// model's positional limit rather than erroring at the ONNX layer.
+const WHOLE_NOTE_CHARS = 10000;
 const IDEA_UNIT_CHARS = 3000; // a single idea (~200-500 words) fits whole at the model
 // Tiny DE+EN stopword set for lexical-cohesion overlap (content words only).
 const IDEA_STOPWORDS = new Set([
@@ -1465,7 +1469,7 @@ export class IndexStore {
     }
     const cap = this.maxChunks;
     for (const id of order) {
-      if (chunks.length - 1 >= cap) break; // -1 for the mean chunk
+      if (chunks.length - 2 >= cap) break; // -2 for the mean + title chunks: cap IDEAS
       const text = (ideaText.get(id) ?? []).join(" ").trim().slice(0, IDEA_UNIT_CHARS);
       if (text.length > 0) chunks.push({ text, isTitle: false });
     }
