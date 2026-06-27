@@ -68,6 +68,7 @@ interface WorkspaceWithSuggest {
 
 export interface RelatedNotesSettings {
   modelId: string;
+  modelChosen: boolean; // first-run gate: no indexing until the user picks a model
   device: DevicePref;
   // WASM indexing speed/memory trade-off (worker-thread count). See threadsForSpeed.
   indexSpeed: IndexSpeed;
@@ -109,6 +110,7 @@ export const DEFAULT_SETTINGS: RelatedNotesSettings = {
   // alike". (multilingual-e5-* are RETRIEVAL models, tuned for short-query →
   // document search, and rank note-to-note similarity poorly.)
   modelId: "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
+  modelChosen: false, // fresh installs start gated; migrated to true for existing users
   device: "auto",
   indexSpeed: "balanced",
   topK: 12,
@@ -154,7 +156,9 @@ const MODEL_OPTIONS: Record<string, string> = {
   "Xenova/paraphrase-multilingual-mpnet-base-v2":
     "mpnet-base multilingual — strongest matches, larger & slower",
   "Xenova/multilingual-e5-small":
-    "e5-small — retrieval/search model, weaker for note similarity",
+    "e5-small: retrieval/search model, weaker for note similarity",
+  "jinaai/jina-embeddings-v5-text-nano-text-matching":
+    "jina-v5-nano: best quality (whole-note), ~250MB download, non-commercial",
 };
 
 // One-click presets. "Balanced" is light and fast; "Best quality" uses a larger
@@ -244,6 +248,10 @@ export default class RelatedNotesPlugin extends Plugin {
   async onload(): Promise<void> {
     const saved = (await this.loadData()) as Partial<RelatedNotesSettings> | null;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
+
+    // First-run gate migration: an install with settings already saved is treated as
+    // having chosen a model, so only a truly fresh install (no data.json) starts gated.
+    if (saved && saved.modelChosen === undefined) this.settings.modelChosen = true;
 
     // One-time recalibration for 1.8.0 mean-centering: the old scores carried an
     // anisotropy "noise floor" (~0.4 for unrelated notes), so users had minSimilarity
@@ -490,6 +498,16 @@ export default class RelatedNotesPlugin extends Plugin {
 
   // --- index lifecycle -------------------------------------------------------
   private async bootstrapIndex(): Promise<void> {
+    // First-run gate: do not download a model or build the index until the user has
+    // explicitly picked one in settings (so a fresh install never auto-downloads).
+    if (!this.settings.modelChosen) {
+      new Notice(
+        "Smart Related Notes: open Settings → Smart Related Notes and pick an embedding model to start indexing.",
+        10000,
+      );
+      this.getView()?.requestRender();
+      return;
+    }
     const loaded = await this.store.load();
     this.getView()?.requestRender();
     if (!loaded) {
@@ -1005,9 +1023,80 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
 
   // The tab body, callable directly (e.g. after applying a profile) without the
   // deprecated display() entry point.
+  // Model cache manager: list the models transformers.js has downloaded into the
+  // browser Cache ("transformers-cache"), with a Remove button to free space after
+  // switching. Async-populates `host` (re-render after a removal).
+  private renderModelCache(host: HTMLElement): void {
+    host.empty();
+    void (async () => {
+      let ids: string[];
+      try {
+        const cache = await caches.open("transformers-cache");
+        const keys = await cache.keys();
+        const set = new Set<string>();
+        for (const req of keys) {
+          const m = /huggingface\.co\/([^/]+\/[^/]+)\/resolve\//.exec(req.url);
+          if (m) set.add(m[1]);
+        }
+        ids = [...set].sort();
+      } catch {
+        host.createEl("div", {
+          cls: "setting-item-description",
+          text: "Could not read the model cache.",
+        });
+        return;
+      }
+      if (ids.length === 0) {
+        host.createEl("div", {
+          cls: "setting-item-description",
+          text: "No models downloaded yet.",
+        });
+        return;
+      }
+      for (const id of ids) {
+        const inUse = this.plugin.settings.modelId === id;
+        new Setting(host).setName(inUse ? `${id}  (in use)` : id).addButton((b) =>
+          b
+            .setButtonText("Remove")
+            .setClass("mod-warning")
+            .onClick(async () => {
+              try {
+                const cache = await caches.open("transformers-cache");
+                for (const req of await cache.keys()) {
+                  if (req.url.includes(`/${id}/`)) await cache.delete(req);
+                }
+                new Notice(`Removed cached model: ${id}`);
+              } catch {
+                new Notice("Could not remove the cached model.");
+              }
+              this.renderModelCache(host);
+            }),
+        );
+      }
+    })();
+  }
+
   private render(): void {
     const { containerEl } = this;
     containerEl.empty();
+
+    // Short orientation blurb at the top.
+    const intro = containerEl.createEl("div", {
+      cls: "setting-item-description rn-settings-intro",
+    });
+    intro.createEl("strong", { text: "Smart Related Notes" });
+    intro.appendText(
+      " embeds your notes locally (offline, nothing leaves your vault) and ranks the rest by meaning. " +
+        "Pick a model below to start indexing: MiniLM (default) is fast and light; jina-v5-nano is the " +
+        "highest quality but a larger, non-commercial download. The first index build runs once after you " +
+        "choose; switching models re-embeds the vault.",
+    );
+    if (!this.plugin.settings.modelChosen) {
+      containerEl.createEl("div", {
+        cls: "setting-item-description rn-settings-gate",
+        text: "No model chosen yet. Indexing is paused until you select one in Model below.",
+      });
+    }
 
     new Setting(containerEl)
       .setName("Performance profile")
@@ -1028,7 +1117,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Model")
       .setDesc(
-        "The embedding model. Paraphrase (symmetric) models judge note-to-note similarity best — MiniLM-L12 (default) is fast; mpnet-base is the strongest. e5 is a retrieval model and ranks similarity poorly here. Weights download once and are cached; changing the model rebuilds the index.",
+        "The embedding model. Paraphrase (symmetric) models judge note-to-note similarity best: MiniLM-L12 (default) is fast, mpnet-base is stronger. jina-v5-nano is the highest quality here (it embeds whole notes plus your ideas), but it is a larger ~250MB download and non-commercial (CC-BY-NC), so it is opt-in. e5 is a retrieval model and ranks similarity poorly here. Weights download once and are cached; changing the model rebuilds the index.",
       )
       .addDropdown((d) => {
         for (const [id, label] of Object.entries(MODEL_OPTIONS)) d.addOption(id, label);
@@ -1037,10 +1126,24 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
           d.addOption(this.plugin.settings.modelId, `${this.plugin.settings.modelId} (custom)`);
         }
         d.setValue(this.plugin.settings.modelId).onChange(async (v) => {
+          // Picking a model satisfies the first-run gate. saveSettings rebuilds when the
+          // model id changes; if it didn't change (a gated user re-picking the default),
+          // kick off the initial build here.
+          const firstChoice = !this.plugin.settings.modelChosen;
+          const modelChanged = this.plugin.settings.modelId !== v;
           this.plugin.settings.modelId = v;
+          this.plugin.settings.modelChosen = true;
           await this.plugin.saveSettings();
+          if (firstChoice && !modelChanged) await this.plugin.rebuildIndex();
         });
       });
+
+    new Setting(containerEl).setName("Downloaded models").setHeading();
+    containerEl.createEl("div", {
+      cls: "setting-item-description",
+      text: "Models cached on this device. Remove one to free disk space after switching models.",
+    });
+    this.renderModelCache(containerEl.createDiv());
 
     new Setting(containerEl)
       .setName("Compute device")

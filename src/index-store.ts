@@ -1,5 +1,9 @@
 import { App, TFile, Notice, normalizePath, debounce, type Debouncer } from "obsidian";
-import { EmbeddingEngine, type ProgressCallback } from "./embeddings";
+import {
+  EmbeddingEngine,
+  modelUsesWholeNote,
+  type ProgressCallback,
+} from "./embeddings";
 import { yieldToUI } from "./async-yield";
 import {
   cosineSimilarity,
@@ -73,6 +77,13 @@ const MIN_IDEA_WORDS = 100; // coalesce ideas below this (overlap-inflated count
 const MAX_IDEA_WINDOWS = 8; // hard size rail (~400-500 words); bounds an idea's span
 const MIN_LEXICAL_WINDOWS = 6; // need at least this many body windows to trust valleys
 const EMPTY_AREAS: ReadonlySet<string> = new Set<string>(); // shared "no isolated area" sentinel
+
+// Whole-note strategy (long-context models like jina-v5, 8192 tokens). The note mean
+// is a SINGLE embed of (title + tags + cleaned body) capped to a token-safe char
+// budget; each IDEA is then embedded WHOLE (it fits the model's window) as a stored
+// chunk, so idea-level matching is preserved at the better model's quality.
+const WHOLE_NOTE_CHARS = 14000; // ~5-7k tokens (EN/DE) — safely under an 8192 window
+const IDEA_UNIT_CHARS = 3000; // a single idea (~200-500 words) fits whole at the model
 // Tiny DE+EN stopword set for lexical-cohesion overlap (content words only).
 const IDEA_STOPWORDS = new Set([
   "the", "and", "for", "are", "but", "not", "you", "all", "any", "can", "her", "was",
@@ -285,6 +296,7 @@ interface NoteChunk {
   heading?: string; // breadcrumb "Note > H1 > H2" of the owning section (in-memory)
   embedText?: string; // what to actually embed (heading-context-prefixed); text if unset
   ideaId?: number; // body-idea group id (assigned pre-cap by assignIdeas; in-memory)
+  isMean?: boolean; // whole-note strategy: this chunk's vector IS the note mean, not a stored row
 }
 
 // What to feed the embedder for a chunk: the heading-context-prefixed input when set,
@@ -1400,6 +1412,66 @@ export class IndexStore {
     return parts.join(", ").slice(0, 200);
   }
 
+  // Whole-note strategy for long-context models (jina-v5). Emits:
+  //   chunk[0] = the MEAN source: one embed of (title + tags + cleaned body), capped
+  //              to a token-safe budget. assembleEntry uses its vector as meanVector.
+  //   chunk[1] = the title chunk (stored, weighted 2x in biMax).
+  //   chunk[2..] = one chunk per IDEA, each idea's full text embedded whole.
+  // Ranking then leads with the strong whole-note cosine and refines with idea-level
+  // biMax — the user's "whole-note performance, fed into the idea extractors".
+  private chunkNoteWholeNote(file: TFile, body: string, meta: string): NoteChunk[] {
+    const titleEmbed = meta ? `${file.basename}. ${meta}` : undefined;
+    const cleanBody = stripMarkdown(body);
+    const wholeText = [`${file.basename}.`, meta, cleanBody]
+      .filter((s) => s.length > 0)
+      .join(" ")
+      .slice(0, WHOLE_NOTE_CHARS);
+    const chunks: NoteChunk[] = [
+      { text: file.basename, isTitle: true, isMean: true, embedText: wholeText },
+      { text: file.basename, isTitle: true, embedText: titleEmbed },
+    ];
+
+    // Reuse the section -> window -> assignIdeas pipeline to find idea boundaries, then
+    // join each idea's windows back into its full text (one embed per idea).
+    const bodyChunks: NoteChunk[] = [];
+    for (const section of splitIntoSections(body)) {
+      const cleaned = stripMarkdownBlocks(section.body);
+      if (cleaned.length === 0) continue;
+      const paragraphs = cleaned
+        .split(/\n{2,}/)
+        .map((p) => p.replace(/\n/g, " ").trim())
+        .filter((p) => p.length > 0);
+      for (const para of paragraphs) {
+        for (const w of windowSentences(splitSentences(para))) {
+          for (const piece of splitToBudget(w)) bodyChunks.push({ text: piece, isTitle: false });
+        }
+      }
+    }
+    if (bodyChunks.length === 0) return chunks;
+    assignIdeas(bodyChunks);
+
+    // Group windows by idea id (contiguous) and join into the idea's full text.
+    const ideaText = new Map<number, string[]>();
+    const order: number[] = [];
+    for (const c of bodyChunks) {
+      const id = c.ideaId ?? 0;
+      let bucket = ideaText.get(id);
+      if (!bucket) {
+        bucket = [];
+        ideaText.set(id, bucket);
+        order.push(id);
+      }
+      bucket.push(c.text);
+    }
+    const cap = this.maxChunks;
+    for (const id of order) {
+      if (chunks.length - 1 >= cap) break; // -1 for the mean chunk
+      const text = (ideaText.get(id) ?? []).join(" ").trim().slice(0, IDEA_UNIT_CHARS);
+      if (text.length > 0) chunks.push({ text, isTitle: false });
+    }
+    return chunks;
+  }
+
   // Structure-aware whole-note chunking: chunk[0] is the standalone title; the body
   // is split at headings (sections) then paragraphs into ~TARGET_WORDS windows, each
   // kept within MAX_CHUNK_CHARS so the model never truncates it. The first window of
@@ -1408,10 +1480,18 @@ export class IndexStore {
   // emitted. The whole note is covered (no char truncation); only the chunk COUNT is
   // capped, and the cap keeps every section represented so no section vanishes.
   private chunkNote(file: TFile, body: string): NoteChunk[] {
+    const meta = this.noteMetaText(file);
+
+    // Whole-note strategy (jina-v5 et al.): the note mean is one embed of the WHOLE
+    // note; each idea is embedded whole as a stored chunk. Keeps idea-level matching
+    // while the primary ranking signal is the strong whole-note vector.
+    if (this.options.chunking && modelUsesWholeNote(this.engine.modelId)) {
+      return this.chunkNoteWholeNote(file, body, meta);
+    }
+
     const chunks: NoteChunk[] = [{ text: file.basename, isTitle: true }];
     // Fold aliases + tags into the title chunk's EMBED input (display text stays the
     // bare basename). This restores the frontmatter signal that chunking strips.
-    const meta = this.noteMetaText(file);
     if (meta) chunks[0].embedText = `${file.basename}. ${meta}`;
 
     if (!this.options.chunking) {
@@ -1646,42 +1726,58 @@ export class IndexStore {
     start: number,
     end: number,
   ): IndexEntry | null {
-    const count = end - start;
+    // Whole-note strategy: chunks[0] is the MEAN source — its vector becomes the note
+    // mean and is NOT stored as a chunk row; the stored chunks begin one later.
+    const hasMean = chunks[0]?.isMean === true;
+    const chunkOff = hasMean ? 1 : 0;
+    const dataStart = start + chunkOff;
+    const count = end - dataStart;
     if (count <= 0) return null;
-    const first = vectors[start];
+    const first = vectors[dataStart];
     if (!first || first.length === 0) return null;
     const dims = first.length;
 
     const buffer = new Float32Array(count * dims);
     for (let c = 0; c < count; c++) {
-      const v = vectors[start + c];
+      const v = vectors[dataStart + c];
       if (!v || v.length !== dims) return null;
       buffer.set(v, c * dims);
     }
-    const meanVector = meanOf(buffer, count, dims);
+    // meanVector: the dedicated whole-note embed (whole-note strategy), else the
+    // L2-normalized mean of the chunk vectors. Both are already unit vectors.
+    let meanVector: Float32Array;
+    if (hasMean) {
+      const mv = vectors[start];
+      if (!mv || mv.length !== dims) return null;
+      meanVector = new Float32Array(mv);
+    } else {
+      meanVector = meanOf(buffer, count, dims);
+    }
     // Quantize to int8 NOW and drop the fp32 buffer; it is re-expanded lazily by the
     // DequantCache only if/when this note enters a Stage-2 shortlist.
     const { q, scales } = quantizeChunksRaw(buffer, count, dims);
 
-    // Idea map: row 0 (title) is its own idea 0; body chunks carry an in-memory ideaId
-    // (assigned pre-cap). Compact distinct surviving body ideas to 1..K in order so the
-    // stored ideaOf is contiguous and idea 0 is always the title (matches the biMax
-    // title-weight contract). Only when chunking is on (the chunking-off path emits a
-    // single un-grouped body blob, so idea ranking stays inert and rank falls to biMax).
+    // Idea map over the STORED chunks. Whole-note strategy: each stored chunk (title +
+    // one-per-idea) is its own idea. Otherwise: compact the in-memory ideaIds with the
+    // title as idea 0 (the biMax title-weight contract). Chunking off -> none.
     let ideaOf: number[] | undefined;
     if (count > 1 && this.options.chunking) {
       ideaOf = new Array<number>(count);
-      ideaOf[0] = 0;
-      const remap = new Map<number, number>();
-      let nextId = 1;
-      for (let c = 1; c < count; c++) {
-        const bid = chunks[c]?.ideaId ?? 0;
-        let mapped = remap.get(bid);
-        if (mapped === undefined) {
-          mapped = nextId++;
-          remap.set(bid, mapped);
+      if (hasMean) {
+        for (let c = 0; c < count; c++) ideaOf[c] = c;
+      } else {
+        ideaOf[0] = 0;
+        const remap = new Map<number, number>();
+        let nextId = 1;
+        for (let c = 1; c < count; c++) {
+          const bid = chunks[c]?.ideaId ?? 0;
+          let mapped = remap.get(bid);
+          if (mapped === undefined) {
+            mapped = nextId++;
+            remap.set(bid, mapped);
+          }
+          ideaOf[c] = mapped;
         }
-        ideaOf[c] = mapped;
       }
     }
 
@@ -1693,7 +1789,9 @@ export class IndexStore {
       meanVector,
       chunkBytes: q,
       scales,
-      chunkTexts: this.options.showSummary ? chunks.map((c) => c.text) : undefined,
+      chunkTexts: this.options.showSummary
+        ? chunks.slice(chunkOff).map((c) => c.text)
+        : undefined,
       ideaOf,
     };
   }

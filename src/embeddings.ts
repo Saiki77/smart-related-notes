@@ -127,14 +127,53 @@ export interface ProgressInfo {
 
 export type ProgressCallback = (info: ProgressInfo) => void;
 
-// Models that need no "query:"/"passage:" prefix (paraphrase-* family). Everything
-// else (the e5 family) requires it. Keyed by a substring of the model id so a user
-// can paste either the Xenova/* port or any compatible mirror.
-function modelNeedsPrefix(modelId: string): boolean {
-  return !/paraphrase-multilingual/i.test(modelId);
+export type EmbedKind = "query" | "passage";
+
+// Per-model embedding behaviour, keyed by a substring of the model id. Paraphrase
+// models (default) are symmetric: no prefix, mean pooling, chunked. e5 is retrieval:
+// "query:"/"passage:" prefix, mean pooling. jina-embeddings-v5 text-matching is
+// symmetric but uses a literal "Document: " prefix on BOTH sides, LAST-TOKEN pooling,
+// and is embedded as a WHOLE NOTE (its 8192-token window holds a full note/idea), so
+// the index uses a whole-note + idea-unit strategy for it (see wholeNote).
+export interface ModelSpec {
+  prefixByKind: boolean; // true -> `${kind}: ` (e5); false -> the fixed `prefix`
+  prefix: string; // fixed prefix when !prefixByKind ("" = none)
+  pooling: "mean" | "lastToken";
+  wholeNote: boolean; // index embeds the whole note + idea-units, not <=480-char windows
 }
 
-export type EmbedKind = "query" | "passage";
+export function modelSpec(modelId: string): ModelSpec {
+  if (/jina-embeddings-v5/i.test(modelId)) {
+    return { prefixByKind: false, prefix: "Document: ", pooling: "lastToken", wholeNote: true };
+  }
+  if (/paraphrase-multilingual/i.test(modelId)) {
+    return { prefixByKind: false, prefix: "", pooling: "mean", wholeNote: false };
+  }
+  return { prefixByKind: true, prefix: "", pooling: "mean", wholeNote: false }; // e5
+}
+
+// True when the model is embedded with the whole-note + idea-unit strategy.
+export function modelUsesWholeNote(modelId: string): boolean {
+  return modelSpec(modelId).wholeNote;
+}
+
+// L2-normalized LAST-TOKEN vector from a pooling:"none" output of a SINGLE input
+// (shape [1, seq, dim] or [seq, dim]). jina v5 right-appends an EOS token; with no
+// padding (single input) the final position IS the EOS the model pools on.
+function lastTokenNorm(out: { data: Float32Array; dims: readonly number[] }): Float32Array {
+  const data = out.data;
+  const d = out.dims;
+  const seq = d.length === 3 ? d[1] : d[0];
+  const dim = d.length === 3 ? d[2] : d[1];
+  const v = new Float32Array(data.subarray((seq - 1) * dim, seq * dim));
+  let norm = 0;
+  for (let i = 0; i < dim; i++) norm += v[i] * v[i];
+  norm = Math.sqrt(norm) || 1;
+  for (let i = 0; i < dim; i++) v[i] /= norm;
+  return v;
+}
+
+type PoolNoneOut = { data: Float32Array; dims: readonly number[]; dispose?: () => void };
 
 // embedBatch processes its inputs in SUB-BATCHES of this many texts, awaiting a
 // macrotask yield between sub-batches so the renderer can paint/handle input
@@ -252,7 +291,14 @@ export class EmbeddingEngine {
     onProgress?: ProgressCallback,
   ): Promise<Float32Array> {
     const pipe = await this.init(onProgress);
-    const input = modelNeedsPrefix(this.modelId) ? `${kind}: ${text}` : text;
+    const spec = modelSpec(this.modelId);
+    const input = spec.prefixByKind ? `${kind}: ${text}` : spec.prefix + text;
+    if (spec.pooling === "lastToken") {
+      const out = (await pipe(input, { pooling: "none" })) as unknown as PoolNoneOut;
+      const v = lastTokenNorm(out);
+      out.dispose?.();
+      return v;
+    }
     const out = await pipe(input, { pooling: "mean", normalize: true });
     // `out.data` is the flat tensor; copy into a plain Float32Array so callers can
     // store/persist it without holding onto the tensor backing store.
@@ -271,8 +317,30 @@ export class EmbeddingEngine {
   ): Promise<Float32Array[]> {
     if (texts.length === 0) return [];
     const pipe = await this.init(onProgress);
-    const prefix = modelNeedsPrefix(this.modelId);
-    const inputs = prefix ? texts.map((t) => `${kind}: ${t}`) : texts;
+    const spec = modelSpec(this.modelId);
+    const inputs = spec.prefixByKind
+      ? texts.map((t) => `${kind}: ${t}`)
+      : spec.prefix
+        ? texts.map((t) => spec.prefix + t)
+        : texts;
+
+    // LAST-TOKEN models (jina): last-token pooling is only correct WITHOUT right-
+    // padding, so embed one input at a time (no batch padding). Still yields to the UI
+    // on the same wall-clock budget so the renderer stays responsive.
+    if (spec.pooling === "lastToken") {
+      const out: Float32Array[] = [];
+      let budget = performance.now();
+      for (let i = 0; i < inputs.length; i++) {
+        const o = (await pipe(inputs[i], { pooling: "none" })) as unknown as PoolNoneOut;
+        out.push(lastTokenNorm(o));
+        o.dispose?.();
+        if (i + 1 < inputs.length && performance.now() - budget > YIELD_BUDGET_MS) {
+          await yieldToUI();
+          budget = performance.now();
+        }
+      }
+      return out;
+    }
 
     // SUB-BATCH the forward passes so the main thread is never blocked for long: one
     // pipe() call over a whole outer batch is a single uninterruptible synchronous

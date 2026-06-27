@@ -242,6 +242,16 @@
   color: var(--text-faint);
 }
 
+/* Settings: intro blurb + first-run "no model chosen" gate notice. */
+.rn-settings-intro {
+  margin-bottom: 1em;
+  line-height: 1.4;
+}
+.rn-settings-gate {
+  margin-bottom: 1em;
+  color: var(--text-accent);
+}
+
 /* Settings: show the numeric value next to each slider. */
 .related-notes-slider-value {
   min-width: 3.5em;
