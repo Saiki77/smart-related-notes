@@ -6,7 +6,7 @@ text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
 .h{font-size:20px;font-weight:600;}.sh{font-size:15px;font-weight:600;}.mut{font-size:12px;}.bx{font-size:13px;font-weight:600;}.chp{font-size:11px;}
 .map{fill:none;stroke:#30363d;}.div{stroke:#30363d;}
 .cA{fill:#16233f;stroke:#5b8def;}.cB{fill:#0c2a27;stroke:#2dd4bf;}.cC{fill:#342810;stroke:#fbbf24;}.cG{fill:#11301d;stroke:#4ade80;}.cI{fill:#1f2733;stroke:#64748b;}
-.chip{fill:#161b22;stroke:#30363d;}.hiA{fill:#161b22;stroke:#5b8def;stroke-width:2;}.hiC{fill:#161b22;stroke:#fbbf24;stroke-width:2;}
+.chip{fill:#161b22;stroke:#30363d;}.cloudA{fill:none;stroke:#5b8def;stroke-dasharray:5 4;}.cloudC{fill:none;stroke:#fbbf24;stroke-dasharray:5 4;}.dA{fill:#5b8def;}.dC{fill:#fbbf24;}.ringA{fill:none;stroke:#5b8def;stroke-width:1.5;}.ringC{fill:none;stroke:#fbbf24;stroke-width:1.5;}
 .tInk{fill:#e6edf3;}.tMut{fill:#9aa4b2;}.tA{fill:#bcd0ff;}.tB{fill:#99f6e4;}.tC{fill:#fde68a;}.tG{fill:#86efac;}.tI{fill:#cbd5e1;}
 .arw{stroke:#6b7280;stroke-width:1.5;fill:none;}.arwf{fill:#6b7280;}
 </style>
@@ -24,16 +24,16 @@ text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
 <line class="arw" x1="212" y1="238" x2="244" y2="238" marker-end="url(#m)"/>
 <rect class="map" x="250" y="158" width="390" height="180" rx="12"/>
 <text class="mut tMut" x="266" y="180">embedding space · position = meaning</text>
-<rect class="cA" x="268" y="190" width="150" height="138" rx="12"/>
-<text class="sh tA" x="280" y="210">characters</text>
-<rect class="hiA" x="280" y="218" width="126" height="22" rx="6"/><text class="chp tA" x="343" y="233" text-anchor="middle">Frodo</text>
-<rect class="chip" x="280" y="246" width="126" height="22" rx="6"/><text class="chp tA" x="343" y="261" text-anchor="middle">Gandalf</text>
-<rect class="chip" x="280" y="274" width="126" height="22" rx="6"/><text class="chp tA" x="343" y="289" text-anchor="middle">Aragorn</text>
-<rect class="cC" x="472" y="190" width="150" height="138" rx="12"/>
-<text class="sh tC" x="484" y="210">items</text>
-<rect class="hiC" x="484" y="218" width="126" height="22" rx="6"/><text class="chp tC" x="547" y="233" text-anchor="middle">The One Ring</text>
-<rect class="chip" x="484" y="246" width="126" height="22" rx="6"/><text class="chp tC" x="547" y="261" text-anchor="middle">Mithril</text>
-<rect class="chip" x="484" y="274" width="126" height="22" rx="6"/><text class="chp tC" x="547" y="289" text-anchor="middle">Andúril</text>
+<text class="sh tA" x="295" y="206">characters</text>
+<text class="sh tC" x="505" y="206">items</text>
+<ellipse class="cloudA" cx="340" cy="274" rx="86" ry="58"/>
+<ellipse class="cloudC" cx="552" cy="274" rx="86" ry="58"/>
+<circle class="ringA" cx="308" cy="248" r="9"/><circle class="dA" cx="308" cy="248" r="5"/><text class="chp tA" x="320" y="252">Frodo</text>
+<circle class="dA" cx="368" cy="266" r="4"/><text class="chp tA" x="377" y="270">Gandalf</text>
+<circle class="dA" cx="330" cy="302" r="4"/><text class="chp tA" x="339" y="306">Aragorn</text>
+<circle class="ringC" cx="512" cy="248" r="9"/><circle class="dC" cx="512" cy="248" r="5"/><text class="chp tC" x="524" y="252">The One Ring</text>
+<circle class="dC" cx="580" cy="266" r="4"/><text class="chp tC" x="589" y="270">Mithril</text>
+<circle class="dC" cx="530" cy="302" r="4"/><text class="chp tC" x="539" y="306">Andúril</text>
 <text class="mut tMut" x="40" y="362">The Ring's note is about an OBJECT (forged, golden, an artifact), so its vector lands among the items;</text>
 <text class="mut tMut" x="40" y="380">Frodo's is about a PERSON, so his lands among the characters. Same model, no tags, no rules.</text>
 <line class="div" x1="40" y1="400" x2="640" y2="400"/>
