@@ -49,6 +49,10 @@ cached and nothing is fetched again.
 Vectors persist as compact JSON in the plugin's config dir, so the index survives
 restarts and only changed notes are re-embedded.
 
+For the full picture — the multi-granularity embeddings, the multi-stage ranking
+funnel, the measured model A/B, mean-centering, and the roadmap toward tag-free concept
+search — see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Features
 
 - **Semantic ranking**: for the active note, ranks every other note by cosine
