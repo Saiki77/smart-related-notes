@@ -45,7 +45,11 @@ The model runs through [`@huggingface/transformers`](https://www.npmjs.com/packa
 on the local ONNX runtime, on the **CPU via WASM** by default, multi-threaded so a
 full reindex is quick, and memory-stable. (A **WebGPU** option exists and is faster,
 but its GPU backend can accumulate memory on large vaults, so it's an explicit opt-in.)
-An **Indexing speed** setting trades CPU threads against memory. The runtime's `.wasm`
+The whole engine lives in its **own worker**, which is **shut down after an idle
+period** (configurable) — so when you're just reading and browsing, the model's
+hundreds of MB to several GB are returned to the system instead of sitting resident;
+it reloads transparently in a few seconds when next needed. An **Indexing speed**
+setting trades CPU threads against reindex time. The runtime's `.wasm`
 is **shipped inside the plugin**, so the only network traffic ever is the one-time
 download of the model weights from the Hugging Face Hub; afterwards the weights are
 cached and nothing is fetched again.
@@ -113,9 +117,15 @@ Next up, going beyond *reading* related notes to *tidying the graph* itself:
 - **Compute device**: **Auto** (recommended) runs on the **CPU (WASM)**, which is
   memory-stable. **WebGPU** is faster but its GPU backend can accumulate memory on
   large vaults, so it's an explicit opt-in. Switching re-downloads the model.
-- **Indexing speed**: CPU threads vs memory. **Fast** (all cores, quickest, but the
-  worker threads hold several GB), **Balanced** (default), **Light** (1 thread, smallest
-  footprint, slower full reindex). Editing a note stays fast at any setting.
+- **Indexing speed**: how many CPU threads embed notes. **Fast** (all cores,
+  quickest), **Balanced** (default), **Light** (1 thread, slowest). A CPU/speed
+  knob — the engine's memory is dominated by the loaded model itself, not the
+  thread count. Editing a note stays fast at any setting.
+- **Unload model when idle**: after this long without indexing or searching
+  (default 15 minutes), the embedding engine is shut down and its memory returned
+  to the system. It reloads automatically in a few seconds on the next use — no
+  re-download. Ranking when switching notes never needs the engine and is
+  unaffected.
 - **Number of results**: how many cards to show.
 - **Minimum similarity**: hide matches below this topical-similarity score (0-1).
   Scores are mean-centered (the embedding noise floor is removed), so unrelated notes

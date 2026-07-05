@@ -1,7 +1,11 @@
-// MUST be the very first import in main.ts, before anything that pulls in
-// @huggingface/transformers.
+// MUST be the very first import of the EMBED WORKER entry (worker/embed-worker.ts)
+// — the only bundle that evaluates @huggingface/transformers since the engine
+// moved into a worker realm. In a normal Obsidian worker there is NO Node-like
+// `process` object (nodeIntegrationInWorker is off) and everything below no-ops;
+// the shim stays as insurance for environments that DO expose one there, where
+// the original renderer problem would reappear verbatim:
 //
-// Why this exists: in Obsidian's Electron renderer, `process.release.name` is
+// In Obsidian's Electron renderer, `process.release.name` is
 // "node", so transformers.js computes IS_NODE_ENV = true (once, at import time:
 // `process?.release?.name === "node"`) and selects the onnxruntime-NODE backend.
 // But onnxruntime-node is externalised — no native binding loads in the renderer —

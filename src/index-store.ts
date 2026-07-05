@@ -816,9 +816,16 @@ export class IndexStore {
   private entries = new Map<string, IndexEntry>();
   private progress: IndexProgress = { status: "idle", done: 0, total: 0 };
   private listeners = new Set<ProgressListener>();
+  // Set on plugin unload (close()): build/flush/label loops bail out promptly.
+  private closed = false;
 
   // Guards against two concurrent builds (e.g. a manual rebuild during startup).
   private building = false;
+  // True when setEngine() invalidated the RUNNING build (its vectors are for the
+  // old model): the build abandons at its next batch boundary without persisting.
+  private buildStale = false;
+  // The running build, so a superseding build() request can await its wind-down.
+  private buildPromise: Promise<void> | null = null;
   // Paths queued for incremental re-embedding while a build is in flight.
   private pending = new Set<string>();
 
@@ -944,6 +951,30 @@ export class IndexStore {
     this.options = options;
     // Re-size the dequant LRU when topK/shortlistSize change (clamped to the floor).
     this.dequant.setCap(this.cacheCapFor(options));
+  }
+
+  // True while the embedding engine holds a live pipeline. The view uses this to
+  // show a "loading model…" hint when a search has to warm the engine up first.
+  engineLoaded(): boolean {
+    return this.engine.loaded;
+  }
+
+  // Drop the caches that only pay off while actively ranking/embedding. Called
+  // when the engine idle-unloads, so an idle plugin holds as little as possible.
+  // Every one repopulates transparently on the next demand (the fp32 dequant
+  // re-derivation is bit-identical, so ranking results are unchanged).
+  trimIdleCaches(): void {
+    this.dequant.clear();
+    this.wordCache.clear();
+  }
+
+  // Plugin unload: stop the embedding loops promptly. The engine is disposed
+  // right after this, so every further embedBatch would just reject — without
+  // the flag a large in-flight build would keep chunking files (CPU + vault
+  // reads) through thousands of doomed batches inside the unloaded plugin.
+  close(): void {
+    this.closed = true;
+    this.debouncedDrainLabels.cancel();
   }
 
   // --- suggester support (Feature B) -----------------------------------------
@@ -1086,6 +1117,11 @@ export class IndexStore {
   // follows this with build().
   setEngine(engine: EmbeddingEngine): void {
     this.engine = engine;
+    // A build running RIGHT NOW is embedding with the old model — mark it stale
+    // so it abandons at its next batch boundary instead of committing a mixed
+    // old+new-model entry set under the new model's header. (The swap path's
+    // own build() call waits for the abandonment, then runs fresh.)
+    if (this.building) this.buildStale = true;
     this.entries = new Map();
     this.pending.clear();
     this.wordCache.clear();
@@ -1590,8 +1626,30 @@ export class IndexStore {
   // If every candidate fails to embed the status flips to "error" with a Notice.
   // `force` re-embeds every note even if its mtime is unchanged.
   async build(onProgress?: ProgressCallback, force = false): Promise<void> {
-    if (this.building) return;
-    this.building = true;
+    // Re-entrancy: a duplicate trigger (double-clicked rebuild) returns as
+    // before — but a running build made STALE by an engine swap (setEngine)
+    // exits at its next batch boundary, and the swap's build request must WAIT
+    // for that and then actually run. Silently skipping it (the old behavior)
+    // let the stale loop finish: later batches embedded with the NEW engine
+    // while earlier ones held OLD-model vectors, and the mixed set was
+    // persisted under the new model's header — surviving restarts.
+    while (this.building) {
+      if (!this.buildStale) return;
+      await this.buildPromise;
+    }
+    const run = this.buildInner(onProgress, force).finally(() => {
+      if (this.buildPromise === run) this.buildPromise = null;
+    });
+    this.buildPromise = run;
+    return run;
+  }
+
+  private async buildInner(
+    onProgress?: ProgressCallback,
+    force = false,
+  ): Promise<void> {
+    this.building = true; // synchronous, so concurrent build() callers see it
+    this.buildStale = false;
     try {
       const files = this.indexableFiles();
       const total = files.length;
@@ -1616,6 +1674,10 @@ export class IndexStore {
 
       try {
         for (let i = 0; i < files.length; i += BATCH_SIZE) {
+          // Abandon promptly when the plugin is unloading OR an engine swap
+          // invalidated this build's vectors (no persist of a half-built entry
+          // set; the swap's superseding build() is waiting on us to exit).
+          if (this.closed || this.buildStale) return;
           const batch = files.slice(i, i + BATCH_SIZE);
 
           // Reuse unchanged entries; collect the rest, flattening their chunks into
@@ -1685,6 +1747,10 @@ export class IndexStore {
         notice.hide();
       }
 
+      // Final gate before committing: the loop's per-batch check can't cover a
+      // swap/close that landed after the LAST batch.
+      if (this.closed || this.buildStale) return;
+
       // Total model failure: notes needed embedding but none succeeded.
       if (attempted > 0 && embedded === 0) {
         this.entries = next;
@@ -1694,8 +1760,12 @@ export class IndexStore {
           status: "error",
           message: `could not load the embedding model (${detail})`,
         });
+        // Surface the underlying error IN the toast: "no detail" reports are
+        // un-debuggable, and the status line is easy to miss. Keep the hint
+        // actionable (first-run download, firewall/AV/proxy, how to open the
+        // console on any OS).
         new Notice(
-          "Related notes: could not load the embedding model. Check your internet connection (first run downloads the model) and that your firewall/CSP allows it. See the console for details.",
+          `Related notes: could not load the embedding model. Reason: ${detail} — First run needs internet (one-time model download); if you are online, a firewall, proxy or antivirus may be blocking it. Full details: developer console (Ctrl+Shift+I / Cmd+Opt+I).`,
           0,
         );
         return;
@@ -1839,6 +1909,7 @@ export class IndexStore {
 
   // --- incremental updates ---------------------------------------------------
   async updateFile(file: TFile): Promise<void> {
+    if (this.closed) return; // unloading: skip the read/chunk work entirely
     if (this.isExcluded(file.path) || file.extension !== "md") return;
     // A new file may introduce (or a re-embed of an existing one may not change) a
     // basename collision; invalidate the cache so the next rank recomputes it.
@@ -1908,6 +1979,7 @@ export class IndexStore {
     this.vectorWriteInFlight = true;
     try {
       for (const path of paths) {
+        if (this.closed) return;
         const file = this.app.vault.getAbstractFileByPath(path);
         if (file instanceof TFile) {
           const entry = await this.embedFile(file, onProgress);
@@ -2610,7 +2682,7 @@ export class IndexStore {
   // vectors did not move), and re-render the affected cards. Re-arms itself while the
   // queue is non-empty so the rest drains in further batches.
   private async drainLabels(): Promise<void> {
-    if (this.labelQueue.size === 0) return;
+    if (this.closed || this.labelQueue.size === 0) return;
     // DEFER while a build or an incremental vector mutation is in flight: a full
     // build() rewrites every vector (any label we computed against the old entries
     // is stale), and a vector mutation leaves the on-disk blob out of step with the

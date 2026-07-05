@@ -1,8 +1,6 @@
-// MUST be first: installs our bundled onnxruntime-web under
-// Symbol.for("onnxruntime") BEFORE @huggingface/transformers is pulled in (via
-// ./embeddings below), so the renderer uses the web runtime instead of the
-// externalized, undefined onnxruntime-node. See ort-shim.ts for the full why.
-import "./ort-shim";
+// NOTE: transformers.js/onnxruntime-web are no longer part of this bundle — the
+// embedding engine lives in a terminable Web Worker (see worker/embed-worker.ts,
+// which imports ort-shim.ts first for the same reason main.ts used to).
 import {
   Plugin,
   PluginSettingTab,
@@ -72,6 +70,9 @@ export interface RelatedNotesSettings {
   device: DevicePref;
   // WASM indexing speed/memory trade-off (worker-thread count). See threadsForSpeed.
   indexSpeed: IndexSpeed;
+  // Minutes without any embedding work before the engine is unloaded to free its
+  // memory (0 = never). It re-initialises transparently on the next demand.
+  idleUnloadMinutes: number;
   topK: number;
   minSimilarity: number;
   // One-time flag: when false, onload lowers a pre-1.8.0 minSimilarity onto the new
@@ -113,6 +114,7 @@ export const DEFAULT_SETTINGS: RelatedNotesSettings = {
   modelChosen: false, // fresh installs start gated; migrated to true for existing users
   device: "auto",
   indexSpeed: "balanced",
+  idleUnloadMinutes: 15,
   topK: 12,
   // Mean-centering (1.8.0) removes the anisotropy noise floor, so scores sit on a
   // lower, floor-free scale where ~0.2 cleanly separates topically-related notes from
@@ -196,10 +198,16 @@ const PROFILES: Record<ProfileName, Partial<RelatedNotesSettings>> = {
 
 // Length of the muted snippet shown on each card.
 const SNIPPET_CHARS = 160;
+// Max cached card snippets (LRU). ~500 × 160 chars ≈ 0.2 MB worst case.
+const SNIPPET_CACHE_CAP = 500;
 
 // Filename the plugin probes to derive the app:// base URL for its self-hosted
 // onnxruntime-web wasm folder. Copied next to main.js by the build (gen-ort.mjs).
-const ORT_PROBE_FILE = "ort/ort-wasm-simd-threaded.jsep.wasm";
+// MUST name a file gen-ort.mjs actually ships: the transformers 4.x upgrade moved
+// the runtime to the asyncify build, and probing the old (no-longer-shipped) jsep
+// file made this check always fail — silently falling back to the CDN and
+// breaking offline use even for full installs.
+const ORT_PROBE_FILE = "ort/ort-wasm-simd-threaded.asyncify.wasm";
 
 // ---------------------------------------------------------------------------
 
@@ -290,6 +298,8 @@ export default class RelatedNotesPlugin extends Plugin {
     // debounced (300ms) in the view, so a batch of resolving labels collapses into
     // one render pass — mirroring getSnippet's coalescing.
     this.store.setRenderHook(() => this.getView()?.requestRender());
+    // Idle auto-unload: free the engine's memory after a quiet period.
+    this.applyEngineIdlePolicy();
 
     // The precision backbone for both link features.
     this.titleIndex = new TitleIndex(this.app, () => this.linkExcludedFolders());
@@ -453,14 +463,39 @@ export default class RelatedNotesPlugin extends Plugin {
   }
 
   onunload(): void {
+    // Cancel armed debouncers so a pending timer (the 20s re-embed flush
+    // especially) can't fire into the unloaded plugin.
+    this.debouncedUpdate?.cancel();
+    this.debouncedTitleRefresh?.cancel();
+    this.debouncedAutoLink?.cancel();
+    // Stop any in-flight build/flush/label loop, then terminate the engine's
+    // worker realm (terminal: post-dispose calls reject instead of respawning).
+    this.store?.close();
+    void this.engine?.dispose();
     // The registered view + editor extension + suggest registration are torn down
     // by Obsidian; we only undo the manual precedence reorder we made.
     this.removeSuggesterPrecedence();
   }
 
+  // Push the idle-unload policy (and the cache-trim hook) onto the CURRENT
+  // engine. Called at load, after every engine swap, and on settings saves.
+  private applyEngineIdlePolicy(): void {
+    this.engine.onIdleUnload = () => {
+      // The engine just unloaded — drop the warm ranking caches too, so an idle
+      // plugin holds as little as possible. Both repopulate on the next rank
+      // (the dequant re-derivation is bit-identical).
+      this.store.trimIdleCaches();
+    };
+    const min = this.settings.idleUnloadMinutes;
+    this.engine.setIdleUnload(min > 0 ? min * 60_000 : null);
+  }
+
   // --- wasm path resolution --------------------------------------------------
   // Derive an app:// URL for the plugin's ort/ folder from the resource path of a
-  // known file inside it, then hand the directory base to the embedding engine.
+  // known file inside it, then hand the directory base to the embedding engine
+  // (which fetches the glue+wasm from it on each worker spawn and transfers them
+  // into the worker — the worker itself runs from a blob: URL and could not
+  // resolve them).
   // getResourcePath returns something like "app://<hash>/<abs>/ort/<file>?<mtime>";
   // we strip the query and the trailing filename to get the directory base. On any
   // failure the engine keeps its pinned-CDN fallback, so this never blocks load.
@@ -868,10 +903,22 @@ export default class RelatedNotesPlugin extends Plugin {
   // instead of a render storm.
   getSnippet(file: TFile): string {
     const cached = this.snippetCache.get(file.path);
-    if (cached && cached.mtime === file.stat.mtime) return cached.text;
+    if (cached && cached.mtime === file.stat.mtime) {
+      // Refresh to MRU (Map insertion order is the LRU order, as in DequantCache).
+      this.snippetCache.delete(file.path);
+      this.snippetCache.set(file.path, cached);
+      return cached.text;
+    }
     void this.app.vault.cachedRead(file).then((content) => {
       const text = stripMarkdown(content).slice(0, SNIPPET_CHARS);
       this.snippetCache.set(file.path, { mtime: file.stat.mtime, text });
+      // Bound the cache: it used to grow one entry per note EVER shown on a card
+      // (only trimmed on delete/rename), i.e. unbounded over a long session.
+      while (this.snippetCache.size > SNIPPET_CACHE_CAP) {
+        const lru = this.snippetCache.keys().next().value;
+        if (lru === undefined) break;
+        this.snippetCache.delete(lru);
+      }
       this.getView()?.requestRender();
     });
     return cached?.text ?? "";
@@ -932,6 +979,9 @@ export default class RelatedNotesPlugin extends Plugin {
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
     this.store.updateOptions(this.storeOptions());
+    // Idle-unload is a live knob: apply it without any engine rebuild. (The swap
+    // path below re-applies it to the replacement engine.)
+    this.applyEngineIdlePolicy();
 
     // --- linking toggles: pure UI/extension state, NEVER an embedding rebuild ---
     // These change what is glowed/suggested, not what is embedded, so they must
@@ -966,6 +1016,14 @@ export default class RelatedNotesPlugin extends Plugin {
     if ((modelChanged || deviceChanged || indexSpeedChanged) && !this.swapping) {
       this.swapping = true;
       try {
+        // Dispose the engine being REPLACED. Without this every model/device/
+        // speed change orphaned the old ONNX session inside the wasm heap —
+        // which can never shrink — so repeated settings changes ratcheted the
+        // resident memory upward by a full model each time. (On the explicit
+        // WebGPU pin this also releases the accumulated GPU memory.)
+        const oldEngine = this.engine;
+        oldEngine.onIdleUnload = null;
+        void oldEngine.dispose();
         // Re-apply the thread count before the new engine's init reads it.
         setEmbedThreads(threadsForSpeed(this.settings.indexSpeed));
         this.engine = new EmbeddingEngine(
@@ -982,6 +1040,7 @@ export default class RelatedNotesPlugin extends Plugin {
         // Swap the engine IN PLACE: the store (and the view's progress
         // subscription) stay valid, so the rebuild's status line stays live.
         this.store.setEngine(this.engine);
+        this.applyEngineIdlePolicy();
         new Notice("Related notes: model changed, rebuilding index…");
         await this.store.build();
       } finally {
@@ -1178,23 +1237,50 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Indexing speed")
       .setDesc(
-        "How many CPU threads to use for indexing (WASM only). Fast uses the most " +
-          "cores and is quickest, but the model's worker threads hold several GB of RAM " +
-          "while loaded; Light is single-threaded — the smallest footprint (~CPU-light) " +
-          "but a full reindex takes longer. Editing a note re-indexes just that note " +
-          "and stays fast at any setting. Changing this rebuilds the index.",
+        "How many CPU threads embed notes (WASM only). Fast uses the most cores " +
+          "and is quickest; Light is single-threaded and slowest. This is a CPU/speed " +
+          "knob — the engine's memory is dominated by the loaded model itself, not " +
+          "the thread count (use 'Unload model when idle' below to free it). Editing " +
+          "a note re-indexes just that note and stays fast at any setting. Changing " +
+          "this rebuilds the index.",
       )
       .addDropdown((d) =>
         d
-          .addOption("light", "Light · 1 thread (smallest memory)")
+          .addOption("light", "Light · 1 thread (slowest)")
           .addOption("balanced", "Balanced (recommended)")
-          .addOption("fast", "Fast · all cores (most memory)")
+          .addOption("fast", "Fast · all cores")
           .setValue(this.plugin.settings.indexSpeed)
           .onChange(async (v) => {
             this.plugin.settings.indexSpeed = v as IndexSpeed;
             await this.plugin.saveSettings();
           }),
       );
+
+    new Setting(containerEl)
+      .setName("Unload model when idle")
+      .setDesc(
+        "After this long without indexing or searching, the embedding engine is " +
+          "shut down to free its memory. It reloads automatically in a few seconds " +
+          "the next time it is needed — no re-download. Related-notes ranking when " +
+          "switching notes never needs the engine and is unaffected.",
+      )
+      .addDropdown((d) => {
+        d.addOption("0", "Never")
+          .addOption("5", "After 5 minutes")
+          .addOption("15", "After 15 minutes (recommended)")
+          .addOption("60", "After 1 hour");
+        // Honour a hand-edited data.json value the list doesn't carry (mirrors
+        // the model dropdown) — otherwise the control would DISPLAY "Never"
+        // while the real timeout stays active.
+        const cur = String(this.plugin.settings.idleUnloadMinutes);
+        if (!["0", "5", "15", "60"].includes(cur)) {
+          d.addOption(cur, `After ${cur} minutes (custom)`);
+        }
+        d.setValue(cur).onChange(async (v) => {
+          this.plugin.settings.idleUnloadMinutes = Number(v) || 0;
+          await this.plugin.saveSettings();
+        });
+      });
 
     {
       const setting = new Setting(containerEl)

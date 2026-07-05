@@ -43,6 +43,10 @@ export class RelatedNotesView extends ItemView {
   private linksMode = false;
   private linksToggleEl!: HTMLElement;
 
+  // True while a search is re-initialising a cold (idle-unloaded) engine; owns
+  // the status line so concurrent progress events can't clobber the hint.
+  private modelWarmup = false;
+
   constructor(leaf: WorkspaceLeaf, plugin: RelatedNotesPlugin) {
     super(leaf);
     this.plugin = plugin;
@@ -146,6 +150,13 @@ export class RelatedNotesView extends ItemView {
   private renderStatus(p: IndexProgress): void {
     if (!this.statusEl) return;
     this.statusEl.empty();
+    // A cold-engine search is warming the model up: that hint owns the status
+    // line until runSearch clears the flag (progress events must not clobber it).
+    if (this.modelWarmup) {
+      this.statusEl.setText("Loading the embedding model…");
+      this.statusEl.removeClass("rn-status-error");
+      return;
+    }
     if (p.status === "building") {
       const pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
       this.statusEl.setText(`Indexing… ${pct}% (${p.done}/${p.total})`);
@@ -295,11 +306,25 @@ export class RelatedNotesView extends ItemView {
     this.subtitleEl.empty();
     this.subtitleEl.appendText("Search: ");
     this.subtitleEl.createSpan({ cls: "rn-based-on", text: query });
+    // A cold engine (first search, or unloaded after the idle timeout) must be
+    // re-initialised before rankByQuery resolves — a few seconds during which the
+    // await below would otherwise just hang silently. Explain the wait.
+    const engineCold = !this.plugin.store.engineLoaded();
+    if (engineCold) {
+      this.modelWarmup = true;
+      this.renderStatus(this.plugin.store.getProgress());
+    }
     let results: RankedNote[] = [];
     try {
       results = await this.plugin.store.rankByQuery(query);
     } catch {
       results = [];
+    } finally {
+      // Restore the live index status once the (possible) warm-up is over.
+      if (engineCold) {
+        this.modelWarmup = false;
+        this.renderStatus(this.plugin.store.getProgress());
+      }
     }
     if (seq !== this.searchSeq || this.searchQuery !== query) return; // superseded
     this.listEl.empty();

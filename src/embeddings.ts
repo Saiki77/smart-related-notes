@@ -1,201 +1,271 @@
-import {
-  pipeline,
-  env,
-  type FeatureExtractionPipeline,
-} from "@huggingface/transformers";
-import { ORT_WEB_CDN } from "./ort-version";
-import { yieldToUI } from "./async-yield";
-// cosineSimilarity now lives in the dependency-free vector-math module (so the
-// node benchmark can import it without pulling in transformers). Re-exported here
-// for back-compat with existing importers and the `cosineSimilarity` symbol.
+// The renderer-side EmbeddingEngine: a same-signature RPC PROXY in front of a
+// dedicated Web Worker that hosts transformers.js + onnxruntime-web (see
+// worker/embed-worker.ts for the full why). The renderer bundle no longer
+// evaluates either library — this file only spawns the worker (from an inlined
+// blob: URL), feeds it the ORT wasm assets, and marshals embed calls.
+//
+// The payoff is deterministic memory release: the ORT wasm heap can never
+// shrink and its runtime has no teardown API, so the pre-worker engine pinned
+// hundreds of MB to several GB from the first embed until Obsidian quit.
+// worker.terminate() (the idle auto-unload below, plus dispose() on unload and
+// engine swaps) now returns ALL of it — heap, pthread pool, session, JS objects
+// — to the OS, and the next embed transparently respawns the worker in a few
+// seconds (model weights come from the browser Cache API, no re-download).
+//
+// cosineSimilarity lives in the dependency-free vector-math module; the model
+// behaviour table lives in model-spec.ts (shared with the worker bundle). Both
+// are re-exported here for back-compat with existing importers.
 export { cosineSimilarity } from "./vector-math";
+export {
+  modelSpec,
+  modelUsesWholeNote,
+  type ModelSpec,
+  type DevicePref,
+  type EmbedKind,
+  type ProgressInfo,
+  type ProgressCallback,
+} from "./model-spec";
 
-// --- transformers.js environment ---------------------------------------------
-// The onnxruntime-WEB backend is forced in ort-shim.ts (imported first in
-// main.ts), which installs our bundled ort-web under Symbol.for("onnxruntime")
-// before transformers loads. That makes InferenceSession defined and rebuilds the
-// device list as [webgpu?, wasm] — the renderer no longer misdetects as Node and
-// no longer dead-ends on the invalid "cpu" device. Here we only configure env
-// (cache + wasm source) before the first pipeline() call.
-//   - allowRemoteModels: pull weights from the HF Hub (no model files shipped).
-//   - allowLocalModels:  off, so the Node FS/getModelFile path is never taken.
-//   - useBrowserCache:   cache weights in the browser Cache API (persists, works
-//                        in the renderer) so the model downloads exactly once.
-//   - wasm.wasmPaths:    where the onnxruntime-web .wasm is fetched from. We point
-//                        this at the plugin's SELF-HOSTED ort/ folder (passed in as
-//                        an app:// resource URL) so the .wasm is the exact build
-//                        that matches the JS glue transformers bundled, and so the
-//                        plugin works fully offline. If no local URL is available
-//                        we fall back to a version-PINNED CDN dir (ORT_WEB_CDN is
-//                        generated at build time from the resolved package version,
-//                        so it can never drift from the shipped glue).
-//   - wasm.numThreads:   multi-threaded — Electron exposes SharedArrayBuffer even
-//                        without cross-origin isolation, so threaded WASM works and
-//                        uses the idle cores (~6x faster than single-threaded).
-let envConfigured = false;
+import workerSource from "virtual:embed-worker";
+import { ORT_WEB_CDN } from "./ort-version";
+import type { DevicePref, EmbedKind, ProgressCallback } from "./model-spec";
+import type {
+  EmbedRequest,
+  InitRequest,
+  WorkerResponse,
+} from "./worker/protocol";
 
 // Set by the plugin (from adapter.getResourcePath) before the first init(). When
-// present it overrides the CDN fallback. Must end in a trailing slash.
+// present it overrides the CDN fallback. Must end in a trailing slash. The
+// assets are fetched HERE (main thread) and transferred into the worker: the
+// worker runs from a blob: URL, so it could not resolve them itself.
 let wasmBaseUrl: string | null = null;
 
-// WASM worker-thread count, set by the plugin from the "Indexing speed" setting. 1 =
-// single-threaded (lightest memory, slowest); higher = faster but the threaded-wasm
-// shared heap holds several GB while loaded. null until set (falls back to a default).
+// WASM worker-thread count, set by the plugin from the "Indexing speed" setting.
+// 1 = single-threaded (slowest); higher = faster full reindexes. Read at every
+// spawn, so a respawn after idle picks up the current value. null -> default.
 let embedThreads: number | null = null;
 
-// Set the WASM thread count and force configureEnv to re-apply it on the next init
-// (the plugin recreates the engine when this changes, the same as a device change).
 export function setEmbedThreads(n: number): void {
   embedThreads = n > 0 ? Math.floor(n) : 1;
-  envConfigured = false;
 }
 
-// Point onnxruntime-web at a locally-served directory of .wasm files. The plugin
-// resolves this from its own folder via the vault adapter, guaranteeing the .wasm
-// matches the bundled glue and that the plugin runs offline. Call before init().
+// Point the engine at a locally-served directory of ort .wasm/.mjs files. The
+// plugin resolves this from its own folder via the vault adapter, guaranteeing
+// the .wasm matches the bundled glue and that the plugin runs offline. Without
+// it the version-PINNED CDN dir is used (ORT_WEB_CDN is generated at build time
+// from the resolved package version, so it can never drift from the glue).
 export function setWasmBaseUrl(url: string): void {
   wasmBaseUrl = url.endsWith("/") ? url : `${url}/`;
 }
 
-// The onnxruntime-web wasm flags. ort reads these from ort.env.wasm in the web
-// build, which transformers exposes as env.backends.onnx.env.wasm (NOT
-// env.backends.onnx.wasm — that's the Node-build shape). wasmPaths may be a
-// directory string OR a { mjs, wasm } map.
-interface OrtWasmFlags {
-  wasmPaths?: string | { mjs?: string; wasm?: string };
-  numThreads?: number;
-  proxy?: boolean;
-}
-
-function configureEnv(): void {
-  if (envConfigured) return;
-  env.allowRemoteModels = true;
-  env.allowLocalModels = false;
-  env.useBrowserCache = true;
-  // ort loads the JS glue from wasmPaths.mjs and the binary from wasmPaths.wasm.
-  // v4 uses the ASYNCIFY single-threaded web build, whose glue carries NO Node /
-  // worker_threads checks (unlike v3's jsep glue), so no patching or Blob is needed.
-  // Point BOTH at the plugin's self-hosted ort/ folder when present (offline, exact-
-  // match build), else the version-pinned CDN. wasmPaths MUST stay an object
-  // {mjs,wasm}: v4 only runs its fetch-into-wasmBinary + renderer-safe load path for
-  // the object form (a bare directory string dead-ends on the worker_threads import).
-  const wasmDir = wasmBaseUrl ?? ORT_WEB_CDN;
-  const wasmPaths = {
-    mjs: `${wasmDir}ort-wasm-simd-threaded.asyncify.mjs`,
-    wasm: `${wasmDir}ort-wasm-simd-threaded.asyncify.wasm`,
-  };
-  // Set the flags on BOTH shapes so the object ort actually reads is always hit.
-  const onnx = env.backends?.onnx as
-    | { wasm?: OrtWasmFlags; env?: { wasm?: OrtWasmFlags } }
-    | undefined;
-  // MULTI-THREADED WASM. The renderer is not cross-origin isolated, but Electron
-  // exposes SharedArrayBuffer anyway, so ort-web's threaded WASM runs and uses the
-  // otherwise-idle cores (~6x faster than single-threaded). The count comes from the
-  // "Indexing speed" setting (setEmbedThreads); 1 = lightest memory but slowest, more
-  // = faster but the shared heap holds several GB. Falls back to a balanced default.
-  // (numThreads>1 is ignored harmlessly if SAB is unavailable.)
+function resolveThreads(): number {
+  if (embedThreads !== null) return embedThreads;
   const cores =
     typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
-  const threads =
-    embedThreads ?? Math.max(1, Math.min(Math.ceil(cores / 3), 4));
-  for (const wasm of [onnx?.wasm, onnx?.env?.wasm]) {
-    if (!wasm) continue;
-    wasm.wasmPaths = wasmPaths;
-    wasm.numThreads = threads;
-    wasm.proxy = false;
+  return Math.max(1, Math.min(Math.ceil(cores / 3), 4)); // balanced default
+}
+
+// Fetch the exact glue+wasm pair the worker will run. From the plugin's
+// self-hosted app:// ort/ folder when it shipped (offline, exact-match build),
+// else the version-pinned CDN (BRAT/manual installs; the browser HTTP cache
+// keeps respawns cheap). ~50-300ms from local disk.
+async function fetchOrtAssets(): Promise<{
+  glueText: string;
+  wasmBinary: ArrayBuffer;
+}> {
+  const base = wasmBaseUrl ?? ORT_WEB_CDN;
+  const get = async (file: string): Promise<Response> => {
+    // NOT requestUrl(): that routes through the main process and cannot resolve
+    // the renderer-registered app:// resource scheme these URLs use (and the
+    // wasm bytes must stay an ArrayBuffer we can transfer). This is the same
+    // in-renderer fetch the ORT runtime itself performed pre-worker.
+    let res: Response;
+    try {
+      // eslint-disable-next-line no-restricted-globals
+      res = await fetch(base + file);
+    } catch (e) {
+      // A network-level failure is a bare "Failed to fetch" with no URL —
+      // useless in a bug report. Say WHAT was fetched from WHERE and the
+      // likely causes (this is the ONNX runtime, a separate download from the
+      // model weights, so it fails even when huggingface.co is reachable).
+      throw new Error(
+        `could not fetch the ONNX runtime (${file}) from ${base} — ` +
+          `${e instanceof Error ? e.message : String(e)}. ` +
+          (wasmBaseUrl
+            ? "The plugin's local ort/ folder could not be read."
+            : "Offline, or a firewall/proxy/antivirus is blocking this URL."),
+      );
+    }
+    if (!res.ok) {
+      throw new Error(
+        `could not fetch the ONNX runtime (${file}) from ${base} — HTTP ${res.status}`,
+      );
+    }
+    return res;
+  };
+  const [glueText, wasmBinary] = await Promise.all([
+    get("ort-wasm-simd-threaded.asyncify.mjs").then((r) => r.text()),
+    get("ort-wasm-simd-threaded.asyncify.wasm").then((r) => r.arrayBuffer()),
+  ]);
+  return { glueText, wasmBinary };
+}
+
+interface PendingEntry {
+  resolve: (rows: Float32Array[]) => void;
+  reject: (e: Error) => void;
+  onProgress?: ProgressCallback;
+}
+
+// One spawned worker + its in-flight request table. Sessions are single-use:
+// a terminated (or crashed) session is never revived — the engine drops it and
+// spawns a fresh one on the next demand.
+class WorkerSession {
+  dead = false;
+  resolvedDevice: "webgpu" | "wasm" | null = null;
+  private readonly worker: Worker;
+  private readonly blobUrl: string;
+  private readonly pending = new Map<number, PendingEntry>();
+  private nextId = 1;
+  private terminated = false;
+
+  constructor(source: string) {
+    this.blobUrl = URL.createObjectURL(
+      new Blob([source], { type: "text/javascript" }),
+    );
+    // A MODULE worker, not a classic one: ort dynamic-import()s its glue .mjs,
+    // which classic workers disallow.
+    this.worker = new Worker(this.blobUrl, { type: "module" });
+    this.worker.onmessage = (e: MessageEvent): void =>
+      this.handleMessage(e.data as WorkerResponse);
+    this.worker.onerror = (e: ErrorEvent): void => {
+      // A script-level error does NOT destroy the worker realm by itself — the
+      // wasm heap would stay resident in a zombie worker. Terminate outright
+      // (rejecting pending requests with the real error message).
+      this.terminate(new Error(e.message || "embed worker error"));
+    };
   }
-  envConfigured = true;
-}
 
-// Device preference for the inference backend. The onnxruntime-web backend only
-// supports "webgpu" (when navigator.gpu is present) and "wasm" — there is NO
-// "cpu" provider in the web runtime ("wasm" IS the CPU path). "auto" probes
-// WebGPU and falls back to WASM.
-export type DevicePref = "auto" | "webgpu" | "wasm";
-
-// Progress events surfaced from pipeline() during the one-time model download.
-// transformers.js types this as `any`; narrow it to just the fields we read.
-export interface ProgressInfo {
-  // One of "initiate" | "download" | "progress" | "done" | "ready", but typed as
-  // a plain string since transformers.js may add states and we only switch on a few.
-  status: string;
-  file?: string;
-  loaded?: number;
-  total?: number;
-  progress?: number;
-}
-
-export type ProgressCallback = (info: ProgressInfo) => void;
-
-export type EmbedKind = "query" | "passage";
-
-// Per-model embedding behaviour, keyed by a substring of the model id. Paraphrase
-// models (default) are symmetric: no prefix, mean pooling, chunked. e5 is retrieval:
-// "query:"/"passage:" prefix, mean pooling. jina-embeddings-v5 text-matching is
-// symmetric but uses a literal "Document: " prefix on BOTH sides, LAST-TOKEN pooling,
-// and is embedded as a WHOLE NOTE (its 8192-token window holds a full note/idea), so
-// the index uses a whole-note + idea-unit strategy for it (see wholeNote).
-export interface ModelSpec {
-  prefixByKind: boolean; // true -> `${kind}: ` (e5); false -> the fixed `prefix`
-  prefix: string; // fixed prefix when !prefixByKind ("" = none)
-  pooling: "mean" | "lastToken";
-  wholeNote: boolean; // index embeds the whole note + idea-units, not <=480-char windows
-}
-
-export function modelSpec(modelId: string): ModelSpec {
-  if (/jina-embeddings-v5/i.test(modelId)) {
-    return { prefixByKind: false, prefix: "Document: ", pooling: "lastToken", wholeNote: true };
+  // Send the one-time init (model + device + the transferred wasm assets) and
+  // resolve when the worker reports the pipeline ready.
+  initModel(
+    modelId: string,
+    devicePref: DevicePref,
+    numThreads: number,
+    assets: { glueText: string; wasmBinary: ArrayBuffer },
+    onProgress?: ProgressCallback,
+  ): Promise<void> {
+    const id = this.nextId++;
+    const req: InitRequest = {
+      id,
+      type: "init",
+      modelId,
+      devicePref,
+      numThreads,
+      wasmGlueText: assets.glueText,
+      wasmBinary: assets.wasmBinary,
+    };
+    return new Promise<void>((resolve, reject) => {
+      if (this.dead) {
+        reject(new Error("embed worker terminated"));
+        return;
+      }
+      this.pending.set(id, { resolve: () => resolve(), reject, onProgress });
+      this.worker.postMessage(req, [assets.wasmBinary]);
+    });
   }
-  if (/paraphrase-multilingual/i.test(modelId)) {
-    return { prefixByKind: false, prefix: "", pooling: "mean", wholeNote: false };
+
+  embed(texts: string[], kind: EmbedKind): Promise<Float32Array[]> {
+    const id = this.nextId++;
+    const req: EmbedRequest = { id, type: "embed", texts, kind };
+    return new Promise<Float32Array[]>((resolve, reject) => {
+      if (this.dead) {
+        reject(new Error("embed worker terminated"));
+        return;
+      }
+      this.pending.set(id, { resolve, reject });
+      this.worker.postMessage(req);
+    });
   }
-  return { prefixByKind: true, prefix: "", pooling: "mean", wholeNote: false }; // e5
+
+  // Kill the realm. This is THE memory-release primitive: it synchronously
+  // destroys the wasm heap/SharedArrayBuffer, the nested pthread workers, the
+  // ONNX session and every transformers object in one shot. Idempotent.
+  terminate(reason?: Error): void {
+    if (this.terminated) return;
+    this.terminated = true;
+    this.worker.terminate();
+    URL.revokeObjectURL(this.blobUrl);
+    this.fail(reason ?? new Error("embed worker terminated"));
+  }
+
+  private handleMessage(msg: WorkerResponse): void {
+    const entry = this.pending.get(msg.id);
+    if (!entry) return;
+    if (msg.type === "progress") {
+      entry.onProgress?.(msg.info);
+      return;
+    }
+    this.pending.delete(msg.id);
+    if (msg.type === "error") {
+      entry.reject(new Error(msg.message));
+      return;
+    }
+    if (msg.type === "ready") {
+      this.resolvedDevice = msg.device;
+      entry.resolve([]);
+      return;
+    }
+    // "result": slice the flat transferred buffer into independent per-row
+    // COPIES (subarray views would pin the whole batch buffer for as long as
+    // any single row — e.g. a stored mean vector — stays referenced).
+    const rows: Float32Array[] = [];
+    for (let i = 0; i < msg.count; i++) {
+      rows.push(msg.data.slice(i * msg.dims, (i + 1) * msg.dims));
+    }
+    entry.resolve(rows);
+  }
+
+  private fail(err: Error): void {
+    this.dead = true;
+    const entries = [...this.pending.values()];
+    this.pending.clear();
+    for (const entry of entries) entry.reject(err);
+  }
 }
 
-// True when the model is embedded with the whole-note + idea-unit strategy.
-export function modelUsesWholeNote(modelId: string): boolean {
-  return modelSpec(modelId).wholeNote;
-}
-
-// L2-normalized LAST-TOKEN vector from a pooling:"none" output of a SINGLE input
-// (shape [1, seq, dim] or [seq, dim]). jina v5 right-appends an EOS token; with no
-// padding (single input) the final position IS the EOS the model pools on.
-function lastTokenNorm(out: { data: Float32Array; dims: readonly number[] }): Float32Array {
-  const data = out.data;
-  const d = out.dims;
-  const seq = d.length === 3 ? d[1] : d[0];
-  const dim = d.length === 3 ? d[2] : d[1];
-  const v = new Float32Array(data.subarray((seq - 1) * dim, seq * dim));
-  let norm = 0;
-  for (let i = 0; i < dim; i++) norm += v[i] * v[i];
-  norm = Math.sqrt(norm) || 1;
-  for (let i = 0; i < dim; i++) v[i] /= norm;
-  return v;
-}
-
-type PoolNoneOut = { data: Float32Array; dims: readonly number[]; dispose?: () => void };
-
-// embedBatch processes its inputs in SUB-BATCHES of this many texts, awaiting a
-// macrotask yield between sub-batches so the renderer can paint/handle input
-// instead of being blocked by one long synchronous WASM forward pass over a whole
-// outer batch (~130+ chunk texts froze the app). A sub-batch of ~12 keeps each
-// pipe() call short while staying large enough for ORT batch throughput. This only
-// changes WHEN pipe() runs — never the order of the returned rows.
-const EMBED_SUB_BATCH = 12;
-
-// Yield to the renderer only after this much wall-clock has accrued since the last
-// yield, instead of after every sub-batch. On a fast machine many sub-batches fit
-// in one budget so we yield rarely (near full throughput); on a slow one we still
-// yield often enough to stay responsive. ~20ms ≈ one frame of headroom.
-const YIELD_BUDGET_MS = 20;
-
-// One feature-extraction engine, bound to a single model id. The plugin holds one
-// instance and rebuilds it when the model id or device preference changes.
+// One feature-extraction engine, bound to a single model id. The plugin holds
+// one instance and rebuilds it when the model id / device / thread preference
+// changes. The public surface (modelId, devicePref, device, init, embed,
+// embedBatch, dispose, setIdleUnload) is unchanged from the pre-worker engine —
+// index-store.ts and main.ts call sites are byte-identical.
 export class EmbeddingEngine {
   readonly modelId: string;
   readonly devicePref: DevicePref;
-  private pipePromise: Promise<FeatureExtractionPipeline> | null = null;
-  private resolvedDevice: "webgpu" | "wasm" | null = null;
+  // Fires after an idle unload actually released the worker, so the plugin can
+  // trim caches that only pay off while the engine is warm.
+  onIdleUnload: (() => void) | null = null;
+
+  private session: WorkerSession | null = null;
+  private sessionPromise: Promise<WorkerSession> | null = null;
+  // Bumped on every unload/dispose; an in-flight spawn that outlives its
+  // generation terminates itself instead of resurrecting the engine.
+  private generation = 0;
+  // TERMINALLY disposed (plugin unload / engine replaced): unlike an idle
+  // unload, later calls must reject instead of respawning the worker —
+  // otherwise an in-flight build loop resurrects a realm nobody owns.
+  private disposed = false;
+  // In-flight embed requests. The idle timer must never terminate under one —
+  // the request would silently never resolve.
+  private inFlight = 0;
+  // In-flight spawn+model-load. Also activity for the idle timer: a settings
+  // save can arm the timer mid-download, and firing then would abort the init
+  // and throw the whole download away.
+  private initInFlight = 0;
+  // Idle auto-unload: after this many ms with no embed activity, terminate the
+  // worker (null = never). Re-armed after init and after every embed call.
+  private idleUnloadMs: number | null = null;
+  private idleTimer: number | null = null;
 
   constructor(modelId: string, devicePref: DevicePref) {
     this.modelId = modelId;
@@ -204,183 +274,236 @@ export class EmbeddingEngine {
 
   // The device the pipeline actually initialised on, once init() has resolved.
   get device(): "webgpu" | "wasm" | null {
-    return this.resolvedDevice;
+    return this.session?.resolvedDevice ?? null;
   }
 
-  // Probe WebGPU the way the renderer exposes it. Returns false on any error so a
-  // missing/disabled adapter transparently falls back to WASM.
-  private static async webgpuAvailable(): Promise<boolean> {
-    try {
-      const nav = navigator as Navigator & {
-        gpu?: { requestAdapter(): Promise<unknown> };
-      };
-      if (!nav.gpu) return false;
-      const adapter = await nav.gpu.requestAdapter();
-      return adapter !== null && adapter !== undefined;
-    } catch {
-      return false;
-    }
+  // True while the engine holds (or is creating) a live worker. The view uses
+  // this to explain the wait when a search must first re-load the model.
+  get loaded(): boolean {
+    return this.sessionPromise !== null;
   }
 
-  // Lazily build the pipeline. Safe to call repeatedly: the first call wins and
-  // every later caller awaits the same promise. WebGPU is tried first (only when a
-  // real adapter is available), with a WASM fallback. If WASM itself also fails
-  // (CDN blocked, offline first-run, wasm/glue mismatch) the rejected promise
-  // propagates to the caller, which surfaces a Notice — the failure is never
-  // swallowed into a silent keyword-only mode.
-  init(onProgress?: ProgressCallback): Promise<FeatureExtractionPipeline> {
-    if (this.pipePromise) return this.pipePromise;
-    configureEnv();
-
-    this.pipePromise = (async () => {
-      const build = (device: "webgpu" | "wasm") => {
-        this.resolvedDevice = device;
-        return pipeline("feature-extraction", this.modelId, {
-          device,
-          // q8 keeps the WASM download small and fast; fp32 is the WebGPU default
-          // (accuracy over a slightly larger download).
-          dtype: device === "webgpu" ? "fp32" : "q8",
-          progress_callback: onProgress,
-        });
-      };
-
-      // The web runtime supports exactly "webgpu" (when an adapter exists) and
-      // "wasm". Every order ends in "wasm" — the always-available CPU path — so
-      // init can never dead-end on an invalid device.
-      //
-      // "auto" uses MULTI-THREADED WASM, NOT WebGPU. WebGPU is faster per reindex
-      // (~6.5s vs ~28s), but onnxruntime-web's WebGPU backend accumulates GPU/unified
-      // memory across reindexes (and across plugin reloads) until Obsidian crashes
-      // (observed twice on this vault, ~70GB). Per-pass tensor disposal (1.7.0) was not
-      // enough. WASM reuses one heap and is memory-stable, so it's the safe default.
-      // WebGPU stays available only as an EXPLICIT pin for users who accept that cost.
-      let order: Array<"webgpu" | "wasm">;
-      if (this.devicePref === "webgpu") {
-        // Honour the explicit pin, but fall back to wasm if webgpu fails to come up.
-        order = ["webgpu", "wasm"];
-      } else {
-        // "auto" and "wasm" both resolve to the memory-stable multi-threaded WASM path.
-        order = ["wasm"];
-      }
-
-      let lastErr: unknown;
-      for (const device of order) {
-        try {
-          return await build(device);
-        } catch (e) {
-          lastErr = e;
-          console.warn(`[related-notes] ${device} init failed`, e);
-        }
-      }
-      // Nothing worked: reset so a later retry can re-attempt, and surface it.
-      this.pipePromise = null;
-      this.resolvedDevice = null;
-      if (lastErr instanceof Error) throw lastErr;
-      throw new Error("No embedding backend available.");
-    })();
-
-    return this.pipePromise;
+  // Configure idle auto-unload. Applies immediately: a shorter timeout re-arms
+  // the running timer, null/0 cancels it. Changing this NEVER rebuilds anything.
+  // Clamped to the int32 setTimeout ceiling — past it Chromium fires the timer
+  // IMMEDIATELY (overflow), which would unload the engine after every embed.
+  setIdleUnload(ms: number | null): void {
+    this.idleUnloadMs = ms !== null && ms > 0 ? Math.min(ms, 2 ** 31 - 1) : null;
+    this.armIdleTimer();
   }
 
-  // Embed one string into a normalized 384-dim Float32Array. Vectors are L2-
-  // normalized, so cosine similarity reduces to a dot product. `kind` selects the
-  // e5 prefix; it is ignored for prefix-free models.
+  // Lazily spawn the worker and load the model. Safe to call repeatedly: the
+  // first call wins and every later caller awaits the same promise. On failure
+  // the promise is cleared so a later retry can re-attempt — the failure is
+  // never swallowed into a silent keyword-only mode.
+  init(onProgress?: ProgressCallback): Promise<void> {
+    return this.ensureSession(onProgress).then(() => undefined);
+  }
+
+  // Embed one string into a normalized Float32Array. Vectors are L2-normalized,
+  // so cosine similarity reduces to a dot product. `kind` selects the e5
+  // prefix; it is ignored for prefix-free models (applied worker-side).
   async embed(
     text: string,
     kind: EmbedKind = "query",
     onProgress?: ProgressCallback,
   ): Promise<Float32Array> {
-    const pipe = await this.init(onProgress);
-    const spec = modelSpec(this.modelId);
-    const input = spec.prefixByKind ? `${kind}: ${text}` : spec.prefix + text;
-    if (spec.pooling === "lastToken") {
-      const out = (await pipe(input, { pooling: "none" })) as unknown as PoolNoneOut;
-      const v = lastTokenNorm(out);
-      out.dispose?.();
-      return v;
-    }
-    const out = await pipe(input, { pooling: "mean", normalize: true });
-    // `out.data` is the flat tensor; copy into a plain Float32Array so callers can
-    // store/persist it without holding onto the tensor backing store.
-    return new Float32Array(out.data as Float32Array);
+    const rows = await this.request([text], kind, onProgress);
+    return rows[0];
   }
 
-  // Embed a batch in ONE pipeline call. transformers runs the whole batch through
-  // a single ORT session pass (real throughput, unlike N awaited single calls that
-  // just queue on the same backend). The output is a [N, dims] tensor; slice its
-  // flat data into one normalized Float32Array per input. Returns [] for an empty
-  // batch. Throws on backend failure (the caller decides how to surface it).
+  // Embed a batch in ONE worker round-trip (the worker runs it through the ORT
+  // session in sub-batches — real batch throughput, order preserved). Returns
+  // [] for an empty batch. Throws on backend failure (the caller decides how
+  // to surface it).
   async embedBatch(
     texts: string[],
     kind: EmbedKind = "passage",
     onProgress?: ProgressCallback,
   ): Promise<Float32Array[]> {
     if (texts.length === 0) return [];
-    const pipe = await this.init(onProgress);
-    const spec = modelSpec(this.modelId);
-    const inputs = spec.prefixByKind
-      ? texts.map((t) => `${kind}: ${t}`)
-      : spec.prefix
-        ? texts.map((t) => spec.prefix + t)
-        : texts;
+    return this.request(texts, kind, onProgress);
+  }
 
-    // LAST-TOKEN models (jina): last-token pooling is only correct WITHOUT right-
-    // padding, so embed one input at a time (no batch padding). Still yields to the UI
-    // on the same wall-clock budget so the renderer stays responsive.
-    if (spec.pooling === "lastToken") {
-      const out: Float32Array[] = [];
-      let budget = performance.now();
-      for (let i = 0; i < inputs.length; i++) {
-        const o = (await pipe(inputs[i], { pooling: "none" })) as unknown as PoolNoneOut;
-        out.push(lastTokenNorm(o));
-        o.dispose?.();
-        if (i + 1 < inputs.length && performance.now() - budget > YIELD_BUDGET_MS) {
-          await yieldToUI();
-          budget = performance.now();
+  // TERMINAL teardown, for plugin unload and for an engine being REPLACED on a
+  // settings swap: after this, every embed/init call REJECTS ("engine
+  // disposed") instead of respawning — the store's per-batch catches and the
+  // keyword/recency fallbacks already handle that. Without the terminal flag,
+  // an in-flight reindex loop would transparently resurrect the worker realm
+  // right after onunload freed it.
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    await this.unload();
+  }
+
+  // NON-terminal teardown — the idle-unload primitive. Terminates the worker
+  // and drops every reference so the next embed starts fresh. Deterministically
+  // returns the entire engine memory (wasm heap, pthread pool, session,
+  // model/tokenizer objects) to the OS. Safe to call repeatedly and while calls
+  // are in flight: new embeds respawn a new worker, while the doomed one is
+  // given a bounded grace period to finish its work.
+  private async unload(): Promise<void> {
+    if (this.idleTimer !== null) {
+      window.clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+    this.generation++;
+    const pending = this.sessionPromise;
+    const session = this.session;
+    this.sessionPromise = null;
+    this.session = null;
+    let doomed = session;
+    if (pending) {
+      try {
+        doomed = await pending;
+      } catch {
+        // Init failed or was cancelled — spawnAndInit already tore it down.
+        doomed = session;
+      }
+    }
+    if (!doomed) return;
+    // Bounded grace period for in-flight requests (terminating mid-request
+    // would leave their promises hanging; fail() below rejects any leftovers).
+    const deadline = Date.now() + 30_000;
+    while (this.inFlight > 0 && Date.now() < deadline) {
+      await new Promise((r) => window.setTimeout(r, 200));
+    }
+    doomed.terminate();
+  }
+
+  private ensureSession(onProgress?: ProgressCallback): Promise<WorkerSession> {
+    if (this.disposed) {
+      return Promise.reject(new Error("engine disposed"));
+    }
+    if (this.sessionPromise) return this.sessionPromise;
+    const promise = this.spawnAndInit(this.generation, onProgress);
+    this.sessionPromise = promise;
+    return promise;
+  }
+
+  private async spawnAndInit(
+    gen: number,
+    onProgress?: ProgressCallback,
+  ): Promise<WorkerSession> {
+    let session: WorkerSession | null = null;
+    this.initInFlight++;
+    try {
+      const assets = await fetchOrtAssets();
+      if (this.generation !== gen) throw new Error("engine disposed");
+      session = new WorkerSession(workerSource);
+      this.session = session;
+      const threads = resolveThreads();
+      try {
+        await session.initModel(
+          this.modelId,
+          this.devicePref,
+          threads,
+          assets,
+          onProgress,
+        );
+      } catch (e) {
+        // ort latches its wasm-init state for a realm's lifetime, so a failed
+        // THREADED bring-up (nested pthread workers, SAB) is unrecoverable
+        // in-realm: the only real retry is a FRESH realm running
+        // single-threaded from the start. (The first wasmBinary was
+        // transferred away, so the assets must be re-fetched.) Costs one extra
+        // model-load attempt when the failure wasn't threads-related — e.g.
+        // offline first run — which fails fast on the same fetch error.
+        if (this.generation !== gen || threads <= 1) throw e;
+        console.warn(
+          "[related-notes] embed worker init failed; retrying single-threaded in a fresh worker",
+          e,
+        );
+        session.terminate();
+        const retryAssets = await fetchOrtAssets();
+        if (this.generation !== gen) throw new Error("engine disposed");
+        session = new WorkerSession(workerSource);
+        this.session = session;
+        await session.initModel(
+          this.modelId,
+          this.devicePref,
+          1,
+          retryAssets,
+          onProgress,
+        );
+      }
+      if (this.generation !== gen) throw new Error("engine disposed");
+      // The heavy resources now exist — start the idle-unload countdown
+      // (each embed re-arms it, so this only fires after true inactivity).
+      this.armIdleTimer();
+      return session;
+    } catch (e) {
+      session?.terminate();
+      if (this.session === session) this.session = null;
+      // Reset ONLY our own generation's promise so a later init can retry —
+      // never a newer session created by a concurrent dispose+re-init.
+      if (this.generation === gen) this.sessionPromise = null;
+      console.warn("[related-notes] embed worker init failed", e);
+      throw e instanceof Error ? e : new Error(String(e));
+    } finally {
+      this.initInFlight--;
+    }
+  }
+
+  private async request(
+    texts: string[],
+    kind: EmbedKind,
+    onProgress?: ProgressCallback,
+  ): Promise<Float32Array[]> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const session = await this.ensureSession(onProgress);
+      if (session.dead) {
+        // The worker crashed or was superseded after init — drop and respawn.
+        this.dropSession(session);
+        continue;
+      }
+      this.inFlight++;
+      try {
+        return await session.embed(texts, kind);
+      } catch (e) {
+        // A dead session (wasm fault, worker crash) must ALWAYS be dropped and
+        // terminated — otherwise the zombie realm stays the engine's current
+        // session, pinning its heap. One respawn+retry keeps a single hiccup
+        // from failing a whole reindex.
+        if (session.dead) {
+          this.dropSession(session);
+          if (attempt === 0) continue;
         }
+        throw e;
+      } finally {
+        this.inFlight--;
+        this.armIdleTimer();
       }
-      return out;
     }
+    throw new Error("embedding worker unavailable");
+  }
 
-    // SUB-BATCH the forward passes so the main thread is never blocked for long: one
-    // pipe() call over a whole outer batch is a single uninterruptible synchronous
-    // WASM pass (~seconds for 130+ chunks) that froze Obsidian. We run pipe() per
-    // EMBED_SUB_BATCH slice and yield (a MessageChannel macrotask — NOT setTimeout,
-    // which Chromium throttles to ~1/sec when unfocused and turned this into minutes
-    // of idle waiting) only once YIELD_BUDGET_MS of work has accrued. Rows are
-    // concatenated IN INPUT ORDER, so the returned Float32Array[] is byte-identical to
-    // the old whole-batch result — build()'s offset regrouping and ranking output are
-    // unchanged. A single input (or one sub-batch's worth) takes exactly one pass with
-    // NO yield, so embed() and a 1-text batch behave exactly as before.
-    const result: Float32Array[] = [];
-    let budgetStart = performance.now();
-    for (let start = 0; start < inputs.length; start += EMBED_SUB_BATCH) {
-      const slice = inputs.slice(start, start + EMBED_SUB_BATCH);
-      const out = await pipe(slice, { pooling: "mean", normalize: true });
-      const data = out.data as Float32Array;
-      const n = slice.length;
-      // dims is [N, D]; derive D defensively from the flat length when shapes drift.
-      const dims =
-        Array.isArray(out.dims) && out.dims.length === 2
-          ? out.dims[1]
-          : Math.floor(data.length / n);
-      for (let i = 0; i < n; i++) {
-        result.push(new Float32Array(data.subarray(i * dims, (i + 1) * dims)));
-      }
-      // Free the backing tensor (the rows above are independent copies). On WebGPU
-      // this releases the GPU buffer immediately instead of waiting for GC, which
-      // bounds memory growth across a reindex's many passes.
-      (out as { dispose?: () => void }).dispose?.();
-      // Yield between sub-batches, but only after enough work to be worth a macrotask
-      // (and never after the final slice). Order/values above are already committed.
-      if (
-        start + EMBED_SUB_BATCH < inputs.length &&
-        performance.now() - budgetStart > YIELD_BUDGET_MS
-      ) {
-        await yieldToUI();
-        budgetStart = performance.now();
-      }
+  private dropSession(session: WorkerSession): void {
+    if (this.session === session) {
+      this.session = null;
+      this.sessionPromise = null;
     }
-    return result;
+    session.terminate();
+  }
+
+  // (Re-)arm the idle timer. No-op until a worker actually exists — an engine
+  // that never embedded holds nothing worth unloading.
+  private armIdleTimer(): void {
+    if (this.idleTimer !== null) {
+      window.clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+    if (this.idleUnloadMs === null || this.sessionPromise === null) return;
+    this.idleTimer = window.setTimeout(() => {
+      this.idleTimer = null;
+      if (this.inFlight > 0 || this.initInFlight > 0) {
+        // A call (or the spawn/model-load itself) is still running — try again
+        // after the current work completes. Firing during an init would abort
+        // it and throw away a possibly minutes-long first model download.
+        this.armIdleTimer();
+        return;
+      }
+      void this.unload().then(() => this.onIdleUnload?.());
+    }, this.idleUnloadMs);
   }
 }

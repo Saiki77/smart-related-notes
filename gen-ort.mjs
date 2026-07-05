@@ -7,7 +7,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { createRequire } from "module";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -93,8 +93,10 @@ export function genOrt() {
   return { ortVersion, cdn };
 }
 
-// Allow running directly: `node gen-ort.mjs`.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Allow running directly: `node gen-ort.mjs`. Compare via pathToFileURL so the
+// check survives paths containing spaces or other URL-encoded characters
+// (import.meta.url is percent-encoded; a raw `file://${argv[1]}` template is not).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { ortVersion: v } = genOrt();
   console.log(`Generated ort-version.ts and copied onnxruntime-web@${v} -> ort/`);
 }
