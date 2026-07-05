@@ -122,8 +122,9 @@ Next up, going beyond *reading* related notes to *tidying the graph* itself:
   knob — the engine's memory is dominated by the loaded model itself, not the
   thread count. Editing a note stays fast at any setting.
 - **Unload model when idle**: after this long without indexing or searching
-  (default 15 minutes), the embedding engine is shut down and its memory returned
-  to the system. It reloads automatically in a few seconds on the next use — no
+  (default 15 minutes; "Right after use" unloads 30 seconds after the last
+  embed), the embedding engine is shut down and its memory returned to the
+  system. It reloads automatically in a few seconds on the next use — no
   re-download. Ranking when switching notes never needs the engine and is
   unaffected.
 - **Number of results**: how many cards to show.

@@ -71,7 +71,8 @@ export interface RelatedNotesSettings {
   // WASM indexing speed/memory trade-off (worker-thread count). See threadsForSpeed.
   indexSpeed: IndexSpeed;
   // Minutes without any embedding work before the engine is unloaded to free its
-  // memory (0 = never). It re-initialises transparently on the next demand.
+  // memory (0 = never; fractional allowed — 0.5 is the "right after use" option).
+  // It re-initialises transparently on the next demand.
   idleUnloadMinutes: number;
   topK: number;
   minSimilarity: number;
@@ -1265,7 +1266,13 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
           "switching notes never needs the engine and is unaffected.",
       )
       .addDropdown((d) => {
+        // 30s is the aggressive floor, not "instant": a respawn costs ~2-5s of
+        // background CPU and note edits are 20s-debounced, so anything shorter
+        // would tear the engine down BETWEEN consecutive edits/label batches
+        // and respawn it seconds later — more churn than the RAM is worth.
         d.addOption("0", "Never")
+          .addOption("0.5", "Right after use (30 seconds)")
+          .addOption("1", "After 1 minute")
           .addOption("5", "After 5 minutes")
           .addOption("15", "After 15 minutes (recommended)")
           .addOption("60", "After 1 hour");
@@ -1273,7 +1280,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         // the model dropdown) — otherwise the control would DISPLAY "Never"
         // while the real timeout stays active.
         const cur = String(this.plugin.settings.idleUnloadMinutes);
-        if (!["0", "5", "15", "60"].includes(cur)) {
+        if (!["0", "0.5", "1", "5", "15", "60"].includes(cur)) {
           d.addOption(cur, `After ${cur} minutes (custom)`);
         }
         d.setValue(cur).onChange(async (v) => {
