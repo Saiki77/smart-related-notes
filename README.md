@@ -49,10 +49,10 @@ The whole engine lives in its **own worker**, which is **shut down after an idle
 period** (configurable) — so when you're just reading and browsing, the model's
 hundreds of MB to several GB are returned to the system instead of sitting resident;
 it reloads transparently in a few seconds when next needed. An **Indexing speed**
-setting trades CPU threads against reindex time. The runtime's `.wasm`
-is **shipped inside the plugin**, so the only network traffic ever is the one-time
-download of the model weights from the Hugging Face Hub; afterwards the weights are
-cached and nothing is fetched again.
+setting trades CPU threads against reindex time. The only network traffic ever is
+one-time: the model weights from the Hugging Face Hub, and the ONNX runtime
+`.wasm` (version-pinned), which is cached into the plugin's own folder; afterwards
+nothing is fetched again and the plugin works offline.
 
 Vectors persist as compact JSON in the plugin's config dir, so the index survives
 restarts and only changed notes are re-embedded.
@@ -74,7 +74,7 @@ the roadmap toward tag-free concept search.
   what the current note *links to* (its members, if it's a map-of-content) instead of
   what it's similar to. The structural complement to similarity ranking.
 - **Inline link suggestions**: when you mention a concept that already has a note, it
-  glows with a slim underline; one click turns the mention into a `[[wikilink]]`. It's
+  glows with a slim underline; one click turns the mention into a wikilink. It's
   context-aware, so a common word (e.g. "analysis") only glows where it fits the topic,
   and works with or without the easy-links plugin.
 - **Fully local & private**: embeddings run in-app on the CPU (WASM, multi-threaded;
@@ -148,7 +148,7 @@ Next up, going beyond *reading* related notes to *tidying the graph* itself:
 - **Excluded folders**: folders left out of the index entirely (and everything
   beneath them); not ranked and not suggested as links. One per line or comma-separated.
 - **Folders excluded from link suggestions**: folders whose notes stay indexed and
-  ranked in the panel, but are never suggested as inline `[[links]]`.
+  ranked in the panel, but are never suggested as inline wikilinks.
 - **Show snippet**: toggle the per-card text preview.
 - **Rebuild index**: force a full re-embed (also on the command palette and the
   panel's refresh icon).
@@ -178,10 +178,10 @@ is a clickable wikilink. Nothing is changed in your notes.
 
 ### From a release
 
-Download `smart-related-notes.zip` from the latest release and extract it into
-`.obsidian/plugins/smart-related-notes/`. The zip already includes the ONNX runtime
-`.wasm` in its `ort/` folder, so nothing extra is needed. Only the model weights
-are fetched, once, on first use.
+Download `main.js`, `manifest.json`, and `styles.css` from the latest release into
+`.obsidian/plugins/smart-related-notes/`. On first use the plugin fetches, once,
+the version-pinned ONNX runtime (cached into its `ort/` folder) and the model
+weights; after that it works offline.
 
 ### With BRAT
 
@@ -211,16 +211,23 @@ npm run lint         # eslint (typescript-eslint + eslint-plugin-obsidianmd)
 ```
 
 `gen-ort.mjs` runs before tsc/lint/esbuild: it writes `src/ort-version.ts` (the
-pinned `onnxruntime-web` version + a CDN fallback URL) and copies the matching
-`onnxruntime-web` `.wasm`/`.mjs` assets into `ort/`. Both are build artifacts and are
-gitignored. The release workflow packages `main.js`, `manifest.json`, `styles.css`,
-and the `ort/` folder into `smart-related-notes.zip`.
+pinned `onnxruntime-web` version + the CDN base the runtime is downloaded from)
+and copies the matching `onnxruntime-web` `.wasm`/`.mjs` assets into `ort/` for
+local dev builds. Both are build artifacts and are gitignored. Releases ship only
+`main.js`, `manifest.json`, and `styles.css` (exactly what Obsidian downloads);
+at runtime the plugin caches the pinned ONNX runtime into its `ort/` folder on
+first use, validated against byte sizes pinned at build time so torn writes or a
+plugin update carrying a different runtime build trigger a clean re-download
+instead of mixing builds.
 
-The renderer reports itself as a Node environment, which would otherwise make
-transformers.js pick the (externalized, unavailable) `onnxruntime-node` backend.
-`src/ort-shim.ts` (imported first in `main.ts`) installs the bundled
-`onnxruntime-web` under `Symbol.for("onnxruntime")` before transformers loads, so the
-web runtime is used and WebGPU/WASM work.
+The embedding engine (transformers.js + onnxruntime-web) runs inside a dedicated
+Web Worker bundled as a second esbuild stage and inlined into `main.js` (see
+`esbuild.config.mjs` and `src/worker/embed-worker.ts`); terminating that worker is
+what returns the engine's memory to the OS when idle. Environments that expose a
+Node-like `process` would make transformers.js pick the (externalized,
+unavailable) `onnxruntime-node` backend — `src/ort-shim.ts` (imported first in
+the worker entry) flips the relevant process markers during module evaluation so
+the web runtime is used and WebGPU/WASM work.
 
 ## License
 

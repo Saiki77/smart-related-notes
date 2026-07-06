@@ -44,24 +44,21 @@ jobs:
             exit 1
           fi
 
-      - name: Verify shipped wasm matches the bundled onnxruntime-web build
+      - name: Verify the ort wasm pair the plugin will download exists for this build
         run: |
-          # The runtime loads ort/*.wasm; it MUST be the exact build transformers
-          # bundled, or WASM init fails. Fail the release if the file is missing.
-          # transformers.js v4 uses the ASYNCIFY web build (v3 used jsep).
+          # The plugin downloads (or dev-copies) the ASYNCIFY glue+wasm pair and
+          # it MUST be the exact build transformers bundled, or WASM init fails.
+          # gen-ort.mjs materialises the pair from node_modules; fail the release
+          # if the expected files are missing (naming/layout drift upstream).
+          # Releases ship ONLY main.js/manifest.json/styles.css (all Obsidian
+          # downloads); the runtime is fetched once at first use and cached in
+          # the plugin folder.
           test -f ort/ort-wasm-simd-threaded.asyncify.wasm
           test -f ort/ort-wasm-simd-threaded.asyncify.mjs
           # Version read from the generated pin file (onnxruntime-web blocks
           # require('onnxruntime-web/package.json') via its "exports" map).
           ORT_VERSION=$(node -e "console.log((require('fs').readFileSync('src/ort-version.ts','utf8').match(/ORT_WEB_VERSION = \"([^\"]+)\"/)||[])[1]||'unknown')")
-          echo "Shipping onnxruntime-web@${ORT_VERSION} wasm assets."
-
-      - name: Package plugin folder (includes self-hosted wasm)
-        run: |
-          mkdir -p dist/smart-related-notes
-          cp main.js manifest.json styles.css dist/smart-related-notes/
-          cp -r ort dist/smart-related-notes/ort
-          (cd dist && zip -r ../smart-related-notes.zip smart-related-notes)
+          echo "Runtime pinned to onnxruntime-web@${ORT_VERSION}."
 
       - name: Extract release notes from annotated tag
         run: |
@@ -77,7 +74,6 @@ jobs:
             main.js
             manifest.json
             styles.css
-            smart-related-notes.zip
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -91,4 +87,3 @@ jobs:
             main.js
             manifest.json
             styles.css
-            smart-related-notes.zip

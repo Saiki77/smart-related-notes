@@ -12,20 +12,28 @@ import {
   MarkdownView,
   Notice,
   normalizePath,
+  requestUrl,
   debounce,
   type Editor,
   type Debouncer,
 } from "obsidian";
 import {
   EmbeddingEngine,
-  setWasmBaseUrl,
+  setOrtAssetLoader,
   setEmbedThreads,
+  type OrtAssets,
   type DevicePref,
 } from "./embeddings";
+import {
+  ORT_WEB_CDN,
+  ORT_WEB_VERSION,
+  ORT_GLUE_BYTES,
+  ORT_WASM_BYTES,
+} from "./ort-version";
 
 // "Indexing speed" presets → WASM worker-thread count. Light is single-threaded
-// (lightest memory, slowest); Fast uses a capped slice of the cores (fastest, but the
-// threaded-wasm shared heap holds several GB while loaded); Balanced sits between.
+// (slowest); Fast uses a capped slice of the cores (fastest). A CPU/speed knob —
+// the engine's memory is dominated by the loaded model, not the thread count.
 export type IndexSpeed = "light" | "balanced" | "fast";
 function threadsForSpeed(speed: IndexSpeed): number {
   const cores =
@@ -202,13 +210,23 @@ const SNIPPET_CHARS = 160;
 // Max cached card snippets (LRU). ~500 × 160 chars ≈ 0.2 MB worst case.
 const SNIPPET_CACHE_CAP = 500;
 
-// Filename the plugin probes to derive the app:// base URL for its self-hosted
-// onnxruntime-web wasm folder. Copied next to main.js by the build (gen-ort.mjs).
-// MUST name a file gen-ort.mjs actually ships: the transformers 4.x upgrade moved
-// the runtime to the asyncify build, and probing the old (no-longer-shipped) jsep
-// file made this check always fail — silently falling back to the CDN and
-// breaking offline use even for full installs.
-const ORT_PROBE_FILE = "ort/ort-wasm-simd-threaded.asyncify.wasm";
+// The ORT runtime pair every worker spawn needs. Present locally in dev builds
+// (gen-ort.mjs copies them next to main.js) and in legacy full-zip installs;
+// community-directory installs get only main.js/manifest/styles, so the plugin
+// downloads the pair ONCE from a pinned CDN into its own ort/ folder and serves
+// it locally from then on (offline after first run). Any pair — local or just
+// downloaded — is validated against the EXACT byte sizes gen-ort.mjs pinned
+// (ORT_GLUE_BYTES/ORT_WASM_BYTES) before use: the pair must be the same build
+// the bundled transformers glue expects, or ORT init fails with cryptic
+// mixed-build errors. Size mismatch (torn cache write, files from an install
+// carrying a different onnxruntime-web, CDN/proxy garbage) → re-download.
+const ORT_GLUE_FILE = "ort-wasm-simd-threaded.asyncify.mjs";
+const ORT_WASM_FILE = "ort-wasm-simd-threaded.asyncify.wasm";
+// CDN sources tried in order; both serve the pinned npm package.
+const ORT_CDNS = [
+  ORT_WEB_CDN,
+  `https://unpkg.com/onnxruntime-web@${ORT_WEB_VERSION}/dist/`,
+];
 
 // ---------------------------------------------------------------------------
 
@@ -272,11 +290,10 @@ export default class RelatedNotesPlugin extends Plugin {
       await this.saveData(this.settings);
     }
 
-    // Point onnxruntime-web at the plugin's self-hosted wasm folder so the .wasm
-    // matches the bundled glue exactly and the plugin works offline. If the folder
-    // didn't ship (BRAT/manual install) we leave the engine on its pinned-CDN
-    // fallback. Awaited so the base is set before the first embed.
-    await this.configureWasmPaths();
+    // How the engine obtains the ORT wasm runtime for each worker spawn: read
+    // from the plugin's ort/ folder, downloading it there once when absent.
+    // Lazy — nothing is read or downloaded until the first embed needs it.
+    setOrtAssetLoader(() => this.loadOrtAssets());
 
     // Apply the WASM thread count BEFORE the engine's first init (configureEnv reads it).
     setEmbedThreads(threadsForSpeed(this.settings.indexSpeed));
@@ -491,38 +508,88 @@ export default class RelatedNotesPlugin extends Plugin {
     this.engine.setIdleUnload(min > 0 ? min * 60_000 : null);
   }
 
-  // --- wasm path resolution --------------------------------------------------
-  // Derive an app:// URL for the plugin's ort/ folder from the resource path of a
-  // known file inside it, then hand the directory base to the embedding engine
-  // (which fetches the glue+wasm from it on each worker spawn and transfers them
-  // into the worker — the worker itself runs from a blob: URL and could not
-  // resolve them).
-  // getResourcePath returns something like "app://<hash>/<abs>/ort/<file>?<mtime>";
-  // we strip the query and the trailing filename to get the directory base. On any
-  // failure the engine keeps its pinned-CDN fallback, so this never blocks load.
-  private async configureWasmPaths(): Promise<void> {
+  // --- ORT runtime assets ------------------------------------------------------
+  // Produce the glue+wasm pair a worker spawn runs, called by the engine per
+  // spawn (the wasmBinary is transferred into the worker, so every call returns
+  // fresh buffers). Resolution order:
+  //   1) The plugin's local ort/ folder (dev builds, legacy full-zip installs,
+  //      cached downloads) when BOTH files match the pinned byte sizes.
+  //   2) A one-time download (~24 MB) from a version-pinned CDN, size-validated
+  //      the same way, then cached into ort/ (best effort) so every later spawn
+  //      — and every later session — is served locally and works offline.
+  private async loadOrtAssets(): Promise<OrtAssets> {
+    const adapter = this.app.vault.adapter;
+    const dir = normalizePath(`${this.pluginDir()}/ort`);
+    const gluePath = normalizePath(`${dir}/${ORT_GLUE_FILE}`);
+    const wasmPath = normalizePath(`${dir}/${ORT_WASM_FILE}`);
+
+    // 1) Local pair, size-validated against the pinned build.
     try {
-      const probe = normalizePath(`${this.pluginDir()}/${ORT_PROBE_FILE}`);
-      // Only self-host if the wasm actually shipped (the full smart-related-notes.zip).
-      // BRAT / manual installs copy just main.js+manifest+styles, so there is no
-      // ort/ folder — getResourcePath would still return an app:// URL, but it
-      // 404s, wedging onnxruntime with ZERO providers ("Unsupported device: wasm.
-      // Should be one of: ."). When the file is absent we leave the base unset so
-      // the engine uses its version-pinned CDN fallback instead.
-      if (!(await this.app.vault.adapter.exists(probe))) return;
-      const resource = this.app.vault.adapter.getResourcePath(probe);
-      if (!resource) return;
-      const noQuery = resource.split("?")[0];
-      const slash = noQuery.lastIndexOf("/");
-      if (slash < 0) return;
-      const base = noQuery.slice(0, slash + 1); // keep trailing slash
-      setWasmBaseUrl(base);
+      if ((await adapter.exists(gluePath)) && (await adapter.exists(wasmPath))) {
+        const [glueBuf, wasmBinary] = await Promise.all([
+          adapter.readBinary(gluePath),
+          adapter.readBinary(wasmPath),
+        ]);
+        if (
+          glueBuf.byteLength === ORT_GLUE_BYTES &&
+          wasmBinary.byteLength === ORT_WASM_BYTES
+        ) {
+          return { glueText: new TextDecoder().decode(glueBuf), wasmBinary };
+        }
+        // Wrong sizes: a torn/interrupted cache write, or files from an install
+        // carrying a different onnxruntime-web build — unusable with the glue
+        // bundled into THIS version. Fall through and replace them.
+        console.warn(
+          `[related-notes] local ORT runtime does not match the bundled build (glue ${glueBuf.byteLength}/${ORT_GLUE_BYTES} B, wasm ${wasmBinary.byteLength}/${ORT_WASM_BYTES} B); re-downloading`,
+        );
+      }
     } catch (e) {
-      console.warn(
-        "[related-notes] could not resolve local wasm path; using CDN fallback",
-        e,
-      );
+      console.warn("[related-notes] local ORT runtime unreadable; downloading", e);
     }
+
+    // 2) One-time pinned-CDN download, cached for next time.
+    const failures: string[] = [];
+    for (const base of ORT_CDNS) {
+      try {
+        const [glue, wasm] = await Promise.all([
+          requestUrl({ url: base + ORT_GLUE_FILE }),
+          requestUrl({ url: base + ORT_WASM_FILE }),
+        ]);
+        const glueBinary = glue.arrayBuffer;
+        const wasmBinary = wasm.arrayBuffer;
+        // Validate BEFORE caching or serving: a proxy/captive-portal can return
+        // 200 with garbage, which must not poison the cache or reach the worker.
+        if (
+          glueBinary.byteLength !== ORT_GLUE_BYTES ||
+          wasmBinary.byteLength !== ORT_WASM_BYTES
+        ) {
+          failures.push(
+            `${base}: unexpected sizes (glue ${glueBinary.byteLength}/${ORT_GLUE_BYTES} B, wasm ${wasmBinary.byteLength}/${ORT_WASM_BYTES} B)`,
+          );
+          continue;
+        }
+        const glueText = new TextDecoder().decode(glueBinary);
+        try {
+          if (!(await adapter.exists(dir))) await adapter.mkdir(dir);
+          await adapter.writeBinary(gluePath, glueBinary);
+          await adapter.writeBinary(wasmPath, wasmBinary);
+        } catch (e) {
+          // Cache write failed (read-only dir?): still usable this session, and
+          // a torn write is caught by the size check on the next launch.
+          console.warn("[related-notes] could not cache the ORT runtime", e);
+        }
+        return { glueText, wasmBinary };
+      } catch (e) {
+        failures.push(`${base}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    // All sources failed: name them (this is the ONNX runtime, a separate
+    // download from the model weights, so it can fail even when huggingface.co
+    // is reachable — and vice versa).
+    throw new Error(
+      `could not obtain the ONNX runtime (${ORT_WASM_FILE}) — ${failures.join("; ")}. ` +
+        "Offline, or a firewall/proxy/antivirus blocks these URLs.",
+    );
   }
 
   private pluginDir(): string {

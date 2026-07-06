@@ -27,19 +27,12 @@ export {
 } from "./model-spec";
 
 import workerSource from "virtual:embed-worker";
-import { ORT_WEB_CDN } from "./ort-version";
 import type { DevicePref, EmbedKind, ProgressCallback } from "./model-spec";
 import type {
   EmbedRequest,
   InitRequest,
   WorkerResponse,
 } from "./worker/protocol";
-
-// Set by the plugin (from adapter.getResourcePath) before the first init(). When
-// present it overrides the CDN fallback. Must end in a trailing slash. The
-// assets are fetched HERE (main thread) and transferred into the worker: the
-// worker runs from a blob: URL, so it could not resolve them itself.
-let wasmBaseUrl: string | null = null;
 
 // WASM worker-thread count, set by the plugin from the "Indexing speed" setting.
 // 1 = single-threaded (slowest); higher = faster full reindexes. Read at every
@@ -50,13 +43,30 @@ export function setEmbedThreads(n: number): void {
   embedThreads = n > 0 ? Math.floor(n) : 1;
 }
 
-// Point the engine at a locally-served directory of ort .wasm/.mjs files. The
-// plugin resolves this from its own folder via the vault adapter, guaranteeing
-// the .wasm matches the bundled glue and that the plugin runs offline. Without
-// it the version-PINNED CDN dir is used (ORT_WEB_CDN is generated at build time
-// from the resolved package version, so it can never drift from the glue).
-export function setWasmBaseUrl(url: string): void {
-  wasmBaseUrl = url.endsWith("/") ? url : `${url}/`;
+// The exact ORT glue+wasm pair a worker spawn runs. Supplied by the PLUGIN via
+// setOrtAssetLoader: this module stays free of Obsidian APIs, and the plugin
+// knows where the assets live (its own folder via the vault adapter, with a
+// one-time pinned-CDN download when absent — see main.ts loadOrtAssets). The
+// wasmBinary is TRANSFERRED into the worker, so the loader must return a fresh
+// buffer per call.
+export interface OrtAssets {
+  glueText: string;
+  wasmBinary: ArrayBuffer;
+}
+export type OrtAssetLoader = () => Promise<OrtAssets>;
+let ortAssetLoader: OrtAssetLoader | null = null;
+
+export function setOrtAssetLoader(loader: OrtAssetLoader): void {
+  ortAssetLoader = loader;
+}
+
+function loadOrtAssets(): Promise<OrtAssets> {
+  if (!ortAssetLoader) {
+    // Only reachable if an embed ran before the plugin's onload wired the
+    // loader — a programming error, not an environment failure.
+    return Promise.reject(new Error("ORT asset loader not configured"));
+  }
+  return ortAssetLoader();
 }
 
 function resolveThreads(): number {
@@ -64,51 +74,6 @@ function resolveThreads(): number {
   const cores =
     typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
   return Math.max(1, Math.min(Math.ceil(cores / 3), 4)); // balanced default
-}
-
-// Fetch the exact glue+wasm pair the worker will run. From the plugin's
-// self-hosted app:// ort/ folder when it shipped (offline, exact-match build),
-// else the version-pinned CDN (BRAT/manual installs; the browser HTTP cache
-// keeps respawns cheap). ~50-300ms from local disk.
-async function fetchOrtAssets(): Promise<{
-  glueText: string;
-  wasmBinary: ArrayBuffer;
-}> {
-  const base = wasmBaseUrl ?? ORT_WEB_CDN;
-  const get = async (file: string): Promise<Response> => {
-    // NOT requestUrl(): that routes through the main process and cannot resolve
-    // the renderer-registered app:// resource scheme these URLs use (and the
-    // wasm bytes must stay an ArrayBuffer we can transfer). This is the same
-    // in-renderer fetch the ORT runtime itself performed pre-worker.
-    let res: Response;
-    try {
-      // eslint-disable-next-line no-restricted-globals
-      res = await fetch(base + file);
-    } catch (e) {
-      // A network-level failure is a bare "Failed to fetch" with no URL —
-      // useless in a bug report. Say WHAT was fetched from WHERE and the
-      // likely causes (this is the ONNX runtime, a separate download from the
-      // model weights, so it fails even when huggingface.co is reachable).
-      throw new Error(
-        `could not fetch the ONNX runtime (${file}) from ${base} — ` +
-          `${e instanceof Error ? e.message : String(e)}. ` +
-          (wasmBaseUrl
-            ? "The plugin's local ort/ folder could not be read."
-            : "Offline, or a firewall/proxy/antivirus is blocking this URL."),
-      );
-    }
-    if (!res.ok) {
-      throw new Error(
-        `could not fetch the ONNX runtime (${file}) from ${base} — HTTP ${res.status}`,
-      );
-    }
-    return res;
-  };
-  const [glueText, wasmBinary] = await Promise.all([
-    get("ort-wasm-simd-threaded.asyncify.mjs").then((r) => r.text()),
-    get("ort-wasm-simd-threaded.asyncify.wasm").then((r) => r.arrayBuffer()),
-  ]);
-  return { glueText, wasmBinary };
 }
 
 interface PendingEntry {
@@ -388,7 +353,7 @@ export class EmbeddingEngine {
     let session: WorkerSession | null = null;
     this.initInFlight++;
     try {
-      const assets = await fetchOrtAssets();
+      const assets = await loadOrtAssets();
       if (this.generation !== gen) throw new Error("engine disposed");
       session = new WorkerSession(workerSource);
       this.session = session;
@@ -415,7 +380,7 @@ export class EmbeddingEngine {
           e,
         );
         session.terminate();
-        const retryAssets = await fetchOrtAssets();
+        const retryAssets = await loadOrtAssets();
         if (this.generation !== gen) throw new Error("engine disposed");
         session = new WorkerSession(workerSource);
         this.session = session;
