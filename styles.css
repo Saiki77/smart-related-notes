@@ -252,6 +252,65 @@
   color: var(--text-accent);
 }
 
+/* Settings: collapsible groups. Only Setup opens by default, so the tab starts
+   as a short list of headings instead of one long scroll. Rows stay in the DOM
+   when collapsed, so Obsidian's settings search can still reach them. */
+.rn-sec {
+  border-top: 1px solid var(--background-modifier-border);
+}
+.rn-sec:last-of-type {
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.rn-sec-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6em;
+  padding: 0.75em 0;
+  cursor: var(--cursor);
+  list-style: none;
+  color: var(--text-normal);
+}
+.rn-sec-summary::-webkit-details-marker {
+  display: none;
+}
+/* Disclosure triangle, rotated when open. Uses the same collapse-indicator
+   glyph Obsidian draws elsewhere so the section reads as native. */
+.rn-sec-summary::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  color: var(--text-faint);
+  transition: transform 100ms ease-in-out;
+}
+.rn-sec[open] > .rn-sec-summary::before {
+  transform: rotate(90deg);
+}
+.rn-sec-summary:hover {
+  color: var(--text-accent);
+}
+.rn-sec-title {
+  font-weight: var(--font-semibold);
+}
+.rn-sec-meta {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+/* The first row inside a section already has the summary above it, so drop the
+   duplicated top border Obsidian puts on every .setting-item. */
+.rn-sec-body > .setting-item:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.rn-sec-body > .setting-item:last-child {
+  padding-bottom: 1em;
+}
+.rn-sec-note {
+  padding: 0.75em 0 0;
+}
+
 /* Settings: show the numeric value next to each slider. */
 .related-notes-slider-value {
   min-width: 3.5em;

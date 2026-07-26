@@ -1135,6 +1135,11 @@ export default class RelatedNotesPlugin extends Plugin {
 export class RelatedNotesSettingTab extends PluginSettingTab {
   plugin: RelatedNotesPlugin;
   private readonly debouncedSave: Debouncer<[], void>;
+  // Which collapsible sections are expanded. Setup is the only one open on a
+  // fresh tab; the rest are opt-in, which is what keeps the page short. Held on
+  // the instance (the tab is registered once) so re-rendering after a profile
+  // apply or a model change preserves what the user opened.
+  private readonly openSections = new Set<string>(["setup"]);
 
   constructor(app: App, plugin: RelatedNotesPlugin) {
     super(app, plugin);
@@ -1212,48 +1217,154 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     })();
   }
 
+  // One collapsible group. Everything but Setup starts closed, so the tab opens
+  // as a short list of headings instead of a 31-row scroll. The open set lives on
+  // the tab instance, so a re-render (applying a profile, picking a model) never
+  // collapses a section the user just opened.
+  //
+  // <details>/<summary> rather than setHeading(): a heading cannot collapse, and
+  // eslint-plugin-obsidianmd forbids hand-built <h*> elements in a settings tab.
+  // Every row stays in the DOM either way, so Obsidian's settings search can still
+  // reach a collapsed setting.
+  private section(
+    title: string,
+    key: string,
+    build: (body: HTMLElement) => void,
+    hint?: string,
+  ): void {
+    const details = this.containerEl.createEl("details", { cls: "rn-sec" });
+    details.open = this.openSections.has(key);
+    const summary = details.createEl("summary", { cls: "rn-sec-summary" });
+    summary.createSpan({ cls: "rn-sec-title", text: title });
+    const meta = summary.createSpan({ cls: "rn-sec-meta" });
+    const body = details.createDiv({ cls: "rn-sec-body" });
+    build(body);
+    // Counted from what was actually built, so the summary can never drift from
+    // the contents. Rows added asynchronously (the model cache) are covered by
+    // `hint` instead.
+    const n = body.querySelectorAll(".setting-item").length;
+    meta.setText(hint ? `${n} settings · ${hint}` : `${n} settings`);
+    details.addEventListener("toggle", () => {
+      if (details.open) this.openSections.add(key);
+      else this.openSections.delete(key);
+    });
+  }
+
+  // A slider row with a live value readout, the shape used by every numeric
+  // setting here. `fmt` renders the readout; onChange is debounced-saved.
+  private slider(
+    host: HTMLElement,
+    name: string,
+    desc: string,
+    opts: { min: number; max: number; step: number; value: number; fmt?: (v: number) => string },
+    apply: (v: number) => void,
+  ): void {
+    const fmt = opts.fmt ?? ((v: number) => String(v));
+    const setting = new Setting(host).setName(name).setDesc(desc);
+    const valueEl = setting.controlEl.createSpan({
+      cls: "related-notes-slider-value",
+      text: fmt(opts.value),
+    });
+    setting.addSlider((s) =>
+      s
+        .setLimits(opts.min, opts.max, opts.step)
+        .setValue(opts.value)
+        .onChange((v) => {
+          apply(v);
+          valueEl.setText(fmt(v));
+          this.debouncedSave();
+        }),
+    );
+  }
+
+  // A toggle row that persists immediately.
+  private toggle(
+    host: HTMLElement,
+    name: string,
+    desc: string,
+    value: boolean,
+    apply: (v: boolean) => void,
+  ): void {
+    new Setting(host)
+      .setName(name)
+      .setDesc(desc)
+      .addToggle((t) =>
+        t.setValue(value).onChange(async (v) => {
+          apply(v);
+          await this.plugin.saveSettings();
+        }),
+      );
+  }
+
+  // A multi-line folder/namespace list that marks the title index dirty when the
+  // value affects link matching.
+  private folderList(
+    host: HTMLElement,
+    name: string,
+    desc: string,
+    placeholder: string,
+    value: string,
+    apply: (v: string) => void,
+    dirtiesTitleIndex = false,
+  ): void {
+    new Setting(host)
+      .setName(name)
+      .setDesc(desc)
+      .addTextArea((t) =>
+        t
+          .setPlaceholder(placeholder)
+          .setValue(value)
+          .onChange((v) => {
+            apply(v);
+            if (dirtiesTitleIndex) this.plugin.titleIndex.markDirty();
+            this.debouncedSave();
+          }),
+      );
+  }
+
   private render(): void {
     const { containerEl } = this;
     containerEl.empty();
 
-    // Short orientation blurb at the top.
     const intro = containerEl.createEl("div", {
       cls: "setting-item-description rn-settings-intro",
     });
     intro.createEl("strong", { text: "Smart Related Notes" });
     intro.appendText(
-      " embeds your notes locally (offline, nothing leaves your vault) and ranks the rest by meaning. " +
-        "Pick a model below to start indexing: MiniLM (default) is fast and light; jina-v5-nano is the " +
-        "highest quality but a larger, non-commercial download. The first index build runs once after you " +
-        "choose; switching models re-embeds the vault.",
+      " ranks your vault by meaning, using a model that runs entirely on this machine — " +
+        "offline, nothing leaves your vault. Pick a model to start indexing.",
     );
     if (!this.plugin.settings.modelChosen) {
       containerEl.createEl("div", {
         cls: "setting-item-description rn-settings-gate",
-        text: "No model chosen yet. Indexing is paused until you select one in Model below.",
+        text: "No model chosen yet. Indexing is paused until you pick one in Setup.",
       });
     }
 
-    new Setting(containerEl)
+    this.section("Setup", "setup", (b) => this.buildSetup(b));
+    this.section("Results panel", "results", (b) => this.buildResults(b));
+    this.section("Linking", "linking", (b) => this.buildLinking(b));
+    this.section("Scope", "scope", (b) => this.buildScope(b));
+    this.section("Engine", "engine", (b) => this.buildEngine(b), "cached models");
+    this.section("Advanced matching", "advanced", (b) => this.buildAdvanced(b));
+  }
+
+  // --- Setup: the only section most people ever open -------------------------
+  private buildSetup(host: HTMLElement): void {
+    new Setting(host)
       .setName("Performance profile")
-      .setDesc(
-        "Quick presets. Balanced is lighter and faster; Best quality uses a larger model and more context for the strongest matches.",
+      .setDesc("Balanced is fast and light. Best quality is slower and stronger.")
+      .addButton((b) =>
+        b.setButtonText("Balanced").onClick(() => void this.applyProfile("balanced")),
       )
       .addButton((b) =>
-        b
-          .setButtonText("Balanced")
-          .onClick(() => void this.applyProfile("balanced")),
-      )
-      .addButton((b) =>
-        b
-          .setButtonText("Best quality")
-          .onClick(() => void this.applyProfile("best")),
+        b.setButtonText("Best quality").onClick(() => void this.applyProfile("best")),
       );
 
-    new Setting(containerEl)
+    new Setting(host)
       .setName("Model")
       .setDesc(
-        "The embedding model. Paraphrase (symmetric) models judge note-to-note similarity best: MiniLM-L12 (default) is fast, mpnet-base is stronger. jina-v5-nano is the highest quality here (it embeds whole notes plus your ideas), but it is a larger ~250MB download and non-commercial (CC-BY-NC), so it is opt-in. e5 is a retrieval model and ranks similarity poorly here. Weights download once and are cached; changing the model rebuilds the index.",
+        "MiniLM is the fast default. jina-v5-nano is the strongest here — a ~250 MB, non-commercial download. Changing this re-embeds the vault.",
       )
       .addDropdown((d) => {
         for (const [id, label] of Object.entries(MODEL_OPTIONS)) d.addOption(id, label);
@@ -1274,20 +1385,191 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl).setName("Downloaded models").setHeading();
-    containerEl.createEl("div", {
-      cls: "setting-item-description",
-      text: "Models cached on this device. Remove one to free disk space after switching models.",
-    });
-    this.renderModelCache(containerEl.createDiv());
+    const progress = this.plugin.store.getProgress();
+    new Setting(host)
+      .setName("Index")
+      .setDesc(
+        progress.status === "building"
+          ? `Indexing… ${progress.done}/${progress.total}`
+          : `${this.plugin.store.count} notes embedded.`,
+      )
+      .addButton((b) =>
+        b
+          .setButtonText("Rebuild index")
+          .setCta()
+          .onClick(() => {
+            void this.plugin.rebuildIndex();
+          }),
+      );
+  }
 
-    new Setting(containerEl)
+  // --- Results panel: what the card stack shows ------------------------------
+  private buildResults(host: HTMLElement): void {
+    this.slider(
+      host,
+      "Number of results",
+      "How many related notes the card stack shows.",
+      { min: 4, max: 30, step: 1, value: this.plugin.settings.topK },
+      (v) => (this.plugin.settings.topK = v),
+    );
+
+    this.slider(
+      host,
+      "Minimum similarity",
+      "Hide notes scoring below this. Around 0.20 separates on-topic from unrelated.",
+      {
+        min: 0,
+        max: 0.9,
+        step: 0.05,
+        value: this.plugin.settings.minSimilarity,
+        fmt: (v) => v.toFixed(2),
+      },
+      (v) => (this.plugin.settings.minSimilarity = v),
+    );
+
+    this.toggle(
+      host,
+      "Show summary line",
+      "Show a short topic label on each card, extracted locally. Rebuilds the index.",
+      this.plugin.settings.showSummary,
+      (v) => (this.plugin.settings.showSummary = v),
+    );
+
+    this.toggle(
+      host,
+      "Show snippet",
+      "Show a one- to two-line preview. Used when the summary line is off.",
+      this.plugin.settings.showSnippet,
+      (v) => (this.plugin.settings.showSnippet = v),
+    );
+
+    this.toggle(
+      host,
+      "Show last-edited time",
+      "Add a muted “edited Nd ago” line to each card.",
+      this.plugin.settings.showRecency,
+      (v) => (this.plugin.settings.showRecency = v),
+    );
+  }
+
+  // --- Linking: glow + the [[ suggester --------------------------------------
+  private buildLinking(host: HTMLElement): void {
+    this.toggle(
+      host,
+      "Highlight linkable mentions",
+      "Glow the first mention of a concept that already has a note. Click the glow to make it a [[wikilink]].",
+      this.plugin.settings.glowEnabled,
+      (v) => (this.plugin.settings.glowEnabled = v),
+    );
+
+    this.toggle(
+      host,
+      "Highlight in live preview only",
+      "Skip the glow in raw source mode.",
+      this.plugin.settings.glowRestrictToLivePreview,
+      (v) => (this.plugin.settings.glowRestrictToLivePreview = v),
+    );
+
+    this.toggle(
+      host,
+      "Highlight ambiguous mentions",
+      "Also glow a phrase owned by more than one note. Off for precision.",
+      this.plugin.settings.glowAmbiguous,
+      (v) => (this.plugin.settings.glowAmbiguous = v),
+    );
+
+    this.toggle(
+      host,
+      "Auto-link later mentions",
+      "Once a note is linked here, link its remaining mentions in this note while you're idle.",
+      this.plugin.settings.autoLinkSubsequent,
+      (v) => (this.plugin.settings.autoLinkSubsequent = v),
+    );
+
+    this.toggle(
+      host,
+      "Smart [[ suggestions",
+      "Rank [[ completions by meaning, not just by name.",
+      this.plugin.settings.suggesterEnabled,
+      (v) => (this.plugin.settings.suggesterEnabled = v),
+    );
+
+    new Setting(host)
+      .setName("Take over the [[ popup")
+      .setDesc(
+        "Put these suggestions at the top of the popup. Off while the Easy Links suggester is active, so the two don't fight.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.suggesterTakeOver).onChange(async (v) => {
+          this.plugin.settings.suggesterTakeOver = v;
+          // Mark the value as an explicit user choice so the easy-links-aware
+          // auto-default never re-derives (and silently overrides) it again.
+          this.plugin.settings.suggesterTakeOverUserSet = true;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    this.toggle(
+      host,
+      "Suggest new notes",
+      "Offer to create a note for a strongly-relevant concept that doesn't have one yet.",
+      this.plugin.settings.suggestNewNotes,
+      (v) => (this.plugin.settings.suggestNewNotes = v),
+    );
+
+    this.slider(
+      host,
+      "New-note confidence",
+      "How relevant a concept must be before a “create new note” row is offered.",
+      {
+        min: 0,
+        max: 0.9,
+        step: 0.05,
+        value: this.plugin.settings.newNoteMinSimilarity,
+        fmt: (v) => v.toFixed(2),
+      },
+      (v) => (this.plugin.settings.newNoteMinSimilarity = v),
+    );
+  }
+
+  // --- Scope: which notes take part ------------------------------------------
+  private buildScope(host: HTMLElement): void {
+    this.folderList(
+      host,
+      "Excluded folders",
+      "Folders left out of the index entirely. One per line; includes everything beneath.",
+      "Templates\nArchive/2023",
+      this.plugin.settings.excludeFolders,
+      (v) => (this.plugin.settings.excludeFolders = v),
+      true,
+    );
+
+    this.folderList(
+      host,
+      "Folders excluded from link suggestions",
+      "Still indexed and ranked, but never suggested as inline [[links]]. One per line.",
+      "Daily\nAttachments/templates",
+      this.plugin.settings.excludeFoldersLinks,
+      (v) => (this.plugin.settings.excludeFoldersLinks = v),
+      true,
+    );
+
+    this.folderList(
+      host,
+      "Isolated areas (tag namespaces)",
+      "One tag namespace per line. Notes in an area only relate to each other, and never appear elsewhere.",
+      "goa",
+      this.plugin.settings.isolatedAreas,
+      (v) => (this.plugin.settings.isolatedAreas = v),
+    );
+  }
+
+  // --- Engine: how and where the model runs ----------------------------------
+  private buildEngine(host: HTMLElement): void {
+    new Setting(host)
       .setName("Compute device")
       .setDesc(
-        "Auto runs on the CPU (WASM) — memory-stable and recommended. WebGPU is faster " +
-          "per reindex but its GPU backend accumulates memory until Obsidian crashes " +
-          "(seen on large vaults), so it's an explicit opt-in only. Changing this " +
-          "re-downloads the model for the new backend.",
+        "Auto runs on the CPU and is memory-stable. WebGPU is faster per reindex but can grow memory until Obsidian crashes.",
       )
       .addDropdown((d) =>
         d
@@ -1301,15 +1583,10 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
+    new Setting(host)
       .setName("Indexing speed")
       .setDesc(
-        "How many CPU threads embed notes (WASM only). Fast uses the most cores " +
-          "and is quickest; Light is single-threaded and slowest. This is a CPU/speed " +
-          "knob — the engine's memory is dominated by the loaded model itself, not " +
-          "the thread count (use 'Unload model when idle' below to free it). Editing " +
-          "a note re-indexes just that note and stays fast at any setting. Changing " +
-          "this rebuilds the index.",
+        "CPU threads used while indexing. Editing one note stays fast at any setting. Changing this rebuilds the index.",
       )
       .addDropdown((d) =>
         d
@@ -1323,13 +1600,10 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
+    new Setting(host)
       .setName("Unload model when idle")
       .setDesc(
-        "After this long without indexing or searching, the embedding engine is " +
-          "shut down to free its memory. It reloads automatically in a few seconds " +
-          "the next time it is needed — no re-download. Related-notes ranking when " +
-          "switching notes never needs the engine and is unaffected.",
+        "Free the model's memory after this long unused. It reloads in a few seconds, with no re-download.",
       )
       .addDropdown((d) => {
         // 30s is the aggressive floor, not "instant": a respawn costs ~2-5s of
@@ -1355,378 +1629,74 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         });
       });
 
-    {
-      const setting = new Setting(containerEl)
-        .setName("Number of results")
-        .setDesc("How many related notes to show in the card stack.");
-      const valueEl = setting.controlEl.createSpan({
-        cls: "related-notes-slider-value",
-        text: String(this.plugin.settings.topK),
-      });
-      setting.addSlider((s) =>
-        s
-          .setLimits(4, 30, 1)
-          .setValue(this.plugin.settings.topK)
-          .onChange((v) => {
-            this.plugin.settings.topK = v;
-            valueEl.setText(String(v));
-            this.debouncedSave();
-          }),
-      );
-    }
+    host.createEl("div", {
+      cls: "setting-item-description rn-sec-note",
+      text: "Models cached on this device. Remove one to free disk space after switching.",
+    });
+    this.renderModelCache(host.createDiv());
+  }
 
-    {
-      const setting = new Setting(containerEl)
-        .setName("Minimum similarity")
-        .setDesc(
-          "Hide notes below this topical-similarity score (0–1). Scores are mean-centered to remove the embedding noise floor, so unrelated notes sit near 0 and only genuinely on-topic notes score high — about 0.2 cleanly separates them. Raise it for a tighter, more focused list; lower it to show weaker matches.",
-        );
-      const fmt = (v: number) => v.toFixed(2);
-      const valueEl = setting.controlEl.createSpan({
-        cls: "related-notes-slider-value",
-        text: fmt(this.plugin.settings.minSimilarity),
-      });
-      setting.addSlider((s) =>
-        s
-          .setLimits(0, 0.9, 0.05)
-          .setValue(this.plugin.settings.minSimilarity)
-          .onChange((v) => {
-            this.plugin.settings.minSimilarity = v;
-            valueEl.setText(fmt(v));
-            this.debouncedSave();
-          }),
-      );
-    }
+  // --- Advanced matching: knobs most vaults never need -----------------------
+  private buildAdvanced(host: HTMLElement): void {
+    this.slider(
+      host,
+      "Idea influence",
+      "How much whole-idea overlap counts against a single matching passage. Re-ranks live, no re-index.",
+      {
+        min: 0,
+        max: 0.6,
+        step: 0.05,
+        value: this.plugin.settings.ideaInfluence,
+        fmt: (v) => v.toFixed(2),
+      },
+      (v) => (this.plugin.settings.ideaInfluence = v),
+    );
 
-    {
-      const setting = new Setting(containerEl)
-        .setName("Idea influence")
-        .setDesc(
-          "How much idea-level matching blends into the score. Notes are grouped into coherent ideas (~200-500 words); this weights whether two notes share a whole idea, not just one lucky passage. 0 = passage-only (the prior behavior). Live ranking knob — changing it re-ranks instantly, no re-index, so you can compare on your own notes.",
-        );
-      const fmt = (v: number) => v.toFixed(2);
-      const valueEl = setting.controlEl.createSpan({
-        cls: "related-notes-slider-value",
-        text: fmt(this.plugin.settings.ideaInfluence),
-      });
-      setting.addSlider((s) =>
-        s
-          .setLimits(0, 0.6, 0.05)
-          .setValue(this.plugin.settings.ideaInfluence)
-          .onChange((v) => {
-            this.plugin.settings.ideaInfluence = v;
-            valueEl.setText(fmt(v));
-            this.debouncedSave();
-          }),
-      );
-    }
+    this.slider(
+      host,
+      "Structure influence",
+      "How much shared tags, links, and frontmatter nudge near-ties. 0 disables it.",
+      {
+        min: 0,
+        max: 0.3,
+        step: 0.01,
+        value: this.plugin.settings.structureInfluence,
+        fmt: (v) => v.toFixed(2),
+      },
+      (v) => (this.plugin.settings.structureInfluence = v),
+    );
 
-    new Setting(containerEl)
-      .setName("Isolated areas (tag namespaces)")
-      .setDesc(
-        "Self-contained areas, one tag namespace per line. A note tagged with an activated namespace (e.g. goa, which matches goa and goa/character) only relates to, and takes tag suggestions from, other notes in that area, and never appears in any other note's cards. Notes in no activated area share one pool. Live ranking knob, no re-index.",
-      )
-      .addTextArea((t) =>
-        t
-          .setPlaceholder("goa")
-          .setValue(this.plugin.settings.isolatedAreas)
-          .onChange((v) => {
-            this.plugin.settings.isolatedAreas = v;
-            this.debouncedSave();
-          }),
-      );
+    this.toggle(
+      host,
+      "Chunk-level matching",
+      "Embed each note as several chunks instead of one vector — far better on long notes. Rebuilds the index.",
+      this.plugin.settings.chunking,
+      (v) => (this.plugin.settings.chunking = v),
+    );
 
-    new Setting(containerEl)
-      .setName("Excluded folders")
-      .setDesc(
-        "Folders left out of the index entirely — not ranked and not suggested as links. One per line (or comma-separated); matches a folder and everything beneath it.",
-      )
-      .addTextArea((t) =>
-        t
-          .setPlaceholder("Templates\nArchive/2023")
-          .setValue(this.plugin.settings.excludeFolders)
-          .onChange((v) => {
-            this.plugin.settings.excludeFolders = v;
-            this.plugin.titleIndex.markDirty();
-            this.debouncedSave();
-          }),
-      );
+    this.slider(
+      host,
+      "Max chunks per note",
+      "Ceiling on chunks embedded per note. Only very long notes reach it. Rebuilds the index.",
+      { min: 8, max: 64, step: 1, value: this.plugin.settings.maxChunks },
+      (v) => (this.plugin.settings.maxChunks = v),
+    );
 
-    new Setting(containerEl)
-      .setName("Folders excluded from link suggestions")
-      .setDesc(
-        "Folders whose notes stay indexed and ranked in the panel, but are never suggested as inline [[links]] (no glow). One per line (or comma-separated).",
-      )
-      .addTextArea((t) =>
-        t
-          .setPlaceholder("Daily\nAttachments/templates")
-          .setValue(this.plugin.settings.excludeFoldersLinks)
-          .onChange((v) => {
-            this.plugin.settings.excludeFoldersLinks = v;
-            this.plugin.titleIndex.markDirty();
-            this.debouncedSave();
-          }),
-      );
+    this.toggle(
+      host,
+      "Heading context",
+      "Prefix each section with its heading breadcrumb when embedding. Rebuilds the index.",
+      this.plugin.settings.headingContext,
+      (v) => (this.plugin.settings.headingContext = v),
+    );
 
-    new Setting(containerEl)
-      .setName("Show summary line")
-      .setDesc(
-        "Show a concise 3–7-word topic label on each card (extracted locally from the note's own chunks — no extra model or download). Falls back to a plain preview when off. Toggling this rebuilds the index so the labels are available, and a full rebuild takes a little longer with labels on.",
-      )
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.showSummary).onChange(async (v) => {
-          this.plugin.settings.showSummary = v;
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName("Show snippet")
-      .setDesc(
-        "Show a one- to two-line text preview on each card. Used as the fallback when the summary line is off.",
-      )
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.showSnippet).onChange(async (v) => {
-          this.plugin.settings.showSnippet = v;
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName("Show last-edited time")
-      .setDesc("Add a muted “edited Nd ago” line to each card.")
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.showRecency).onChange(async (v) => {
-          this.plugin.settings.showRecency = v;
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    {
-      const setting = new Setting(containerEl)
-        .setName("Structure influence")
-        .setDesc(
-          "How much shared tags, links, co-citations, and frontmatter nudge the ranking. Bounded so it only re-orders near-ties and never promotes an unrelated note. 0 disables it.",
-        );
-      const fmt = (v: number) => v.toFixed(2);
-      const valueEl = setting.controlEl.createSpan({
-        cls: "related-notes-slider-value",
-        text: fmt(this.plugin.settings.structureInfluence),
-      });
-      setting.addSlider((s) =>
-        s
-          .setLimits(0, 0.3, 0.01)
-          .setValue(this.plugin.settings.structureInfluence)
-          .onChange((v) => {
-            this.plugin.settings.structureInfluence = v;
-            valueEl.setText(fmt(v));
-            this.debouncedSave();
-          }),
-      );
-    }
-
-    new Setting(containerEl)
-      .setName("Chunk-level matching")
-      .setDesc(
-        "Embed each note as several sentence-level chunks instead of one whole-note vector — far more accurate for long notes. Turning this off reverts to single-vector matching. Changing it rebuilds the index.",
-      )
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.chunking).onChange(async (v) => {
-          this.plugin.settings.chunking = v;
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    {
-      const setting = new Setting(containerEl)
-        .setName("Max chunks per note")
-        .setDesc(
-          "Advanced. Ceiling on idea-chunks embedded per note (the title is extra). The whole note is covered up to this cap; only very long notes approach it. Higher captures more breadth but grows the index and slows ranking. Changing it rebuilds the index.",
-        );
-      const valueEl = setting.controlEl.createSpan({
-        cls: "related-notes-slider-value",
-        text: String(this.plugin.settings.maxChunks),
-      });
-      setting.addSlider((s) =>
-        s
-          .setLimits(8, 64, 1)
-          .setValue(this.plugin.settings.maxChunks)
-          .onChange((v) => {
-            this.plugin.settings.maxChunks = v;
-            valueEl.setText(String(v));
-            this.debouncedSave();
-          }),
-      );
-    }
-
-    new Setting(containerEl)
-      .setName("Heading context")
-      .setDesc(
-        "Prefix each section's first chunk with its note + heading breadcrumb when embedding, so a section embeds with the context of where it sits. Improves matching; turn off to compare. Changing it rebuilds the index.",
-      )
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.headingContext).onChange(async (v) => {
-          this.plugin.settings.headingContext = v;
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    {
-      const setting = new Setting(containerEl)
-        .setName("Shortlist size")
-        .setDesc(
-          "Advanced. How many coarse candidates are re-ranked with the precise chunk comparison on each note switch. Higher is slightly more thorough but slower (kept at least 4× the result count).",
-        );
-      const valueEl = setting.controlEl.createSpan({
-        cls: "related-notes-slider-value",
-        text: String(this.plugin.settings.shortlistSize),
-      });
-      setting.addSlider((s) =>
-        s
-          .setLimits(20, 150, 10)
-          .setValue(this.plugin.settings.shortlistSize)
-          .onChange((v) => {
-            this.plugin.settings.shortlistSize = v;
-            valueEl.setText(String(v));
-            this.debouncedSave();
-          }),
-      );
-    }
-
-    // --- Linking (Features A + B) --------------------------------------------
-    new Setting(containerEl).setName("Linking").setHeading();
-
-    new Setting(containerEl)
-      .setName("Highlight linkable mentions")
-      .setDesc(
-        "Glow the first time a concept that already has a note is named in the current note. Click the glow to turn it into a [[wikilink]]. Matches exact titles and aliases only (precise — it never glows a phrase with no matching note).",
-      )
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.glowEnabled).onChange(async (v) => {
-          this.plugin.settings.glowEnabled = v;
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName("Highlight in live preview only")
-      .setDesc(
-        "Only show the glow in live preview (the normal reading/editing view), not in raw source mode.",
-      )
-      .addToggle((t) =>
-        t
-          .setValue(this.plugin.settings.glowRestrictToLivePreview)
-          .onChange(async (v) => {
-            this.plugin.settings.glowRestrictToLivePreview = v;
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("Highlight ambiguous mentions")
-      .setDesc(
-        "Also glow a phrase owned by two or more notes. Off by default for precision (an ambiguous mention can't be attributed to one note).",
-      )
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.glowAmbiguous).onChange(async (v) => {
-          this.plugin.settings.glowAmbiguous = v;
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName("Auto-link later mentions")
-      .setDesc(
-        "After a note is linked once (by click or the command), automatically link its remaining mentions in this note while you're idle. Opt-in: cursor-aware and re-validating, so it never clobbers what you're typing.",
-      )
-      .addToggle((t) =>
-        t
-          .setValue(this.plugin.settings.autoLinkSubsequent)
-          .onChange(async (v) => {
-            this.plugin.settings.autoLinkSubsequent = v;
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("Smart [[ suggestions")
-      .setDesc(
-        "When you type [[, rank existing notes by semantic relevance to what you're writing (reusing the index), not just by name.",
-      )
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.suggesterEnabled).onChange(async (v) => {
-          this.plugin.settings.suggesterEnabled = v;
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName("Take over the [[ popup")
-      .setDesc(
-        "Put these suggestions at the top of the [[ popup. Off by default when the Easy Links smart suggester is active, so the two don't fight; turn on to prefer these.",
-      )
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.suggesterTakeOver).onChange(async (v) => {
-          this.plugin.settings.suggesterTakeOver = v;
-          // Mark the value as an explicit user choice so the easy-links-aware
-          // auto-default never re-derives (and silently overrides) it again.
-          this.plugin.settings.suggesterTakeOverUserSet = true;
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName("Suggest new notes")
-      .setDesc(
-        "Offer to create a brand-new note for a strongly-relevant concept that doesn't have one yet, labelled clearly as new.",
-      )
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.suggestNewNotes).onChange(async (v) => {
-          this.plugin.settings.suggestNewNotes = v;
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    {
-      const setting = new Setting(containerEl)
-        .setName("New-note confidence")
-        .setDesc(
-          "How relevant a concept must be before a “create new note” row is offered (0–1). Higher proposes fewer, more confident new notes.",
-        );
-      const fmt = (v: number) => v.toFixed(2);
-      const valueEl = setting.controlEl.createSpan({
-        cls: "related-notes-slider-value",
-        text: fmt(this.plugin.settings.newNoteMinSimilarity),
-      });
-      setting.addSlider((s) =>
-        s
-          .setLimits(0, 0.9, 0.05)
-          .setValue(this.plugin.settings.newNoteMinSimilarity)
-          .onChange((v) => {
-            this.plugin.settings.newNoteMinSimilarity = v;
-            valueEl.setText(fmt(v));
-            this.debouncedSave();
-          }),
-      );
-    }
-
-    // --- index status + manual rebuild ---------------------------------------
-    const progress = this.plugin.store.getProgress();
-    new Setting(containerEl)
-      .setName("Index")
-      .setDesc(
-        progress.status === "building"
-          ? `Indexing… ${progress.done}/${progress.total}`
-          : `${this.plugin.store.count} notes embedded.`,
-      )
-      .addButton((b) =>
-        b
-          .setButtonText("Rebuild index")
-          .setCta()
-          .onClick(() => {
-            void this.plugin.rebuildIndex();
-          }),
-      );
+    this.slider(
+      host,
+      "Shortlist size",
+      "How many candidates get the precise chunk comparison on each note switch.",
+      { min: 20, max: 150, step: 10, value: this.plugin.settings.shortlistSize },
+      (v) => (this.plugin.settings.shortlistSize = v),
+    );
   }
 
   hide(): void {
