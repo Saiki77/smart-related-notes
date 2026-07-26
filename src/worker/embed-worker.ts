@@ -73,6 +73,49 @@ function lastTokenNorm(out: { data: Float32Array; dims: readonly number[] }): Fl
   return v;
 }
 
+// --- ORT glue: defeat its Node branch in EVERY realm --------------------------
+//
+// The glue decides Node-vs-browser twice, both times with the equivalent of
+//   globalThis.process?.versions?.node && globalThis.process?.type != "renderer"
+// and its Node branch does `require("worker_threads")`, which cannot resolve in a
+// blob module worker. ort-shim.ts neutralises that by setting process.type — but
+// only for THIS realm. The threaded runtime spawns its pthread pool as fresh
+// module workers loaded straight from the glue URL, realms where ort-shim never
+// runs, so every one of them took the Node branch and died with
+//   Uncaught TypeError: Failed to resolve module specifier 'worker_threads'
+// That failed EVERY threaded bring-up. The proxy recovered by respawning
+// single-threaded, so the only visible trace was a console warning — and indexing
+// silently never used more than one core, making "Indexing speed" inert.
+//
+// transformers.js patches this very check itself (replacing the left operand with
+// `false`), but only when wasmPaths.mjs is NOT already a blob: URL — and ours
+// always is, because the glue reaches this worker as transferred TEXT, not as a
+// fetchable path. So the plugin opts out of the upstream fix by construction and
+// has to apply the equivalent itself, to the text, before it becomes a blob.
+//
+// Two independent layers, because each fails differently:
+//   1. GLUE_NODE_CHECK — the exact token transformers replaces. Both shipped
+//      builds spell the full condition two different ways, but both share this
+//      left operand, so one replacement kills all of them. If onnxruntime-web
+//      ever remints it, this silently stops matching — which is why
+//      bench/glue-prelude-check.mjs asserts the token is still present.
+//   2. GLUE_PRELUDE — sets process.type the way ort-shim does, so the check is
+//      false even if the token above drifts. In a plain browser worker (no
+//      `process` at all) it is a no-op; the try/catch keeps a locked-down realm
+//      from taking glue evaluation down with it.
+// Obsidian's worker realms DO expose a Node-like `process`, which is why any of
+// this is needed at all.
+const GLUE_NODE_CHECK = "globalThis.process?.versions?.node";
+const GLUE_PRELUDE = [
+  "try {",
+  "  if (globalThis.process?.versions?.node && globalThis.process.type !== 'renderer') {",
+  "    try { globalThis.process.type = 'renderer'; }",
+  "    catch { Object.defineProperty(globalThis.process, 'type', { value: 'renderer', configurable: true, writable: true }); }",
+  "  }",
+  "} catch {}",
+  "",
+].join("\n");
+
 // Configure the transformers.js / ort environment from the init payload. Unlike
 // the old renderer-side configureEnv there is no app://-vs-CDN resolution here:
 // the renderer already fetched the exact glue+wasm pair and handed them over.
@@ -86,9 +129,12 @@ function configureEnv(req: InitRequest, numThreads: number): void {
 
   // The glue must be import()able from inside this (blob:) worker, so wrap the
   // transferred source text in the worker's own blob URL. NOT revoked: the
-  // threaded runtime's pthread pool may import it again when spawning a worker.
+  // threaded runtime's pthread pool may import it again when spawning a worker
+  // — which is exactly why GLUE_PRELUDE has to travel WITH the text.
   const glueUrl = URL.createObjectURL(
-    new Blob([req.wasmGlueText], { type: "text/javascript" }),
+    new Blob([GLUE_PRELUDE, req.wasmGlueText.replaceAll(GLUE_NODE_CHECK, "false")], {
+      type: "text/javascript",
+    }),
   );
   const onnx = env.backends?.onnx as
     | { wasm?: OrtWasmFlags; env?: { wasm?: OrtWasmFlags } }

@@ -13,7 +13,7 @@
     "lint": "eslint \"src/**/*.ts\"",
     "bench": "node --experimental-strip-types bench/at-rest.mjs",
     "pretest": "node gen-ort.mjs",
-    "test": "node bench/ort-runtime-check.mjs",
+    "test": "node bench/glue-prelude-check.mjs && node bench/ort-runtime-check.mjs",
     "version": "node version-bump.mjs && git add manifest.json versions.json"
   },
   "keywords": [

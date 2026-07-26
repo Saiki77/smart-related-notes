@@ -57,8 +57,12 @@ const ortVersion = JSON.parse(
 //   asyncify — the only build carrying the WebGPU EP, but its CPU EP is missing
 //              GatherBlockQuantized. Shipped for the explicit WebGPU device pin.
 // main.ts picks the pair per spawn from the device (see ORT_RUNTIMES below).
-// Neither glue needs the old v3 patchGlueForWeb step: both guard their
-// Node/worker_threads branch on "real Node, not Electron".
+// BOTH glues still carry a Node branch that require()s worker_threads, guarded on
+// "real Node, not an Electron renderer" — the shipped files are NOT patched here
+// (their byte sizes are pinned below and validated at runtime). The worker fixes
+// it at load time instead, by prepending GLUE_PRELUDE to the glue text so the
+// guard is satisfied in every realm that evaluates it, including the pthread
+// workers the threaded runtime spawns. See worker/embed-worker.ts.
 const ORT_RUNTIME_BUILDS = {
   wasm: {
     glue: "ort-wasm-simd-threaded.mjs",
