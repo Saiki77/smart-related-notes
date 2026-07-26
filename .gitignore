@@ -2,6 +2,7 @@ node_modules/
 main.js
 ort/
 src/ort-version.ts
+.ort-test-cache/
 *.js.map
 .DS_Store
 *.log

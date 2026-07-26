@@ -43,6 +43,18 @@ export function setEmbedThreads(n: number): void {
   embedThreads = n > 0 ? Math.floor(n) : 1;
 }
 
+// Which onnxruntime-web build a spawn runs. The two are NOT interchangeable:
+//   "wasm"   — the CPU-only pair. Full CPU kernel set, including the
+//              com.microsoft GatherBlockQuantized kernel a block-quantized
+//              embedding TABLE needs. jina-v5-nano quantizes its 128256x768
+//              embed_tokens table, so all of its quantized exports (q8/q4/q4f16)
+//              carry a GatherBlockQuantized node and load ONLY on this build.
+//   "webgpu" — the asyncify pair, the only one carrying the WebGPU EP. Its CPU
+//              EP is missing GatherBlockQuantized, so it is used exclusively for
+//              an explicit WebGPU pin that has a real adapter behind it.
+// See gen-ort.mjs (which pins both pairs' byte sizes) and main.ts loadOrtAssets.
+export type OrtRuntimeBuild = "wasm" | "webgpu";
+
 // The exact ORT glue+wasm pair a worker spawn runs. Supplied by the PLUGIN via
 // setOrtAssetLoader: this module stays free of Obsidian APIs, and the plugin
 // knows where the assets live (its own folder via the vault adapter, with a
@@ -53,20 +65,49 @@ export interface OrtAssets {
   glueText: string;
   wasmBinary: ArrayBuffer;
 }
-export type OrtAssetLoader = () => Promise<OrtAssets>;
+export type OrtAssetLoader = (build: OrtRuntimeBuild) => Promise<OrtAssets>;
 let ortAssetLoader: OrtAssetLoader | null = null;
 
 export function setOrtAssetLoader(loader: OrtAssetLoader): void {
   ortAssetLoader = loader;
 }
 
-function loadOrtAssets(): Promise<OrtAssets> {
+function loadOrtAssets(build: OrtRuntimeBuild): Promise<OrtAssets> {
   if (!ortAssetLoader) {
     // Only reachable if an embed ran before the plugin's onload wired the
     // loader — a programming error, not an environment failure.
     return Promise.reject(new Error("ORT asset loader not configured"));
   }
-  return ortAssetLoader();
+  return ortAssetLoader(build);
+}
+
+// WebGPU adapter probe, memoised for the renderer's lifetime (the answer cannot
+// change without a restart, and every spawn would otherwise re-request one).
+let webgpuProbe: Promise<boolean> | null = null;
+
+function webgpuAvailable(): Promise<boolean> {
+  webgpuProbe ??= (async () => {
+    try {
+      const nav = navigator as Navigator & {
+        gpu?: { requestAdapter(): Promise<unknown> };
+      };
+      if (!nav.gpu) return false;
+      return (await nav.gpu.requestAdapter()) != null;
+    } catch {
+      return false;
+    }
+  })();
+  return webgpuProbe;
+}
+
+// The renderer must choose WHICH pair to hand the worker before the worker
+// exists, so it repeats the adapter probe the worker does. Only a WebGPU pin
+// that can actually get an adapter gets the asyncify build; a pin on a machine
+// without one would fall back to the asyncify CPU EP, which is exactly the
+// kernel-starved path that cannot load jina.
+async function runtimeBuildFor(devicePref: DevicePref): Promise<OrtRuntimeBuild> {
+  if (devicePref !== "webgpu") return "wasm";
+  return (await webgpuAvailable()) ? "webgpu" : "wasm";
 }
 
 function resolveThreads(): number {
@@ -353,7 +394,11 @@ export class EmbeddingEngine {
     let session: WorkerSession | null = null;
     this.initInFlight++;
     try {
-      const assets = await loadOrtAssets();
+      // Resolved ONCE per spawn so the single-threaded retry below re-fetches
+      // the SAME pair — a mismatched glue/wasm combination fails ORT init with
+      // errors far more cryptic than the threading problem it is retrying.
+      const build = await runtimeBuildFor(this.devicePref);
+      const assets = await loadOrtAssets(build);
       if (this.generation !== gen) throw new Error("engine disposed");
       session = new WorkerSession(workerSource);
       this.session = session;
@@ -380,7 +425,7 @@ export class EmbeddingEngine {
           e,
         );
         session.terminate();
-        const retryAssets = await loadOrtAssets();
+        const retryAssets = await loadOrtAssets(build);
         if (this.generation !== gen) throw new Error("engine disposed");
         session = new WorkerSession(workerSource);
         this.session = session;

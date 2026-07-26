@@ -22,14 +22,10 @@ import {
   setOrtAssetLoader,
   setEmbedThreads,
   type OrtAssets,
+  type OrtRuntimeBuild,
   type DevicePref,
 } from "./embeddings";
-import {
-  ORT_WEB_CDN,
-  ORT_WEB_VERSION,
-  ORT_GLUE_BYTES,
-  ORT_WASM_BYTES,
-} from "./ort-version";
+import { ORT_WEB_CDN, ORT_WEB_VERSION, ORT_RUNTIMES } from "./ort-version";
 
 // "Indexing speed" presets → WASM worker-thread count. Light is single-threaded
 // (slowest); Fast uses a capped slice of the cores (fastest). A CPU/speed knob —
@@ -210,18 +206,20 @@ const SNIPPET_CHARS = 160;
 // Max cached card snippets (LRU). ~500 × 160 chars ≈ 0.2 MB worst case.
 const SNIPPET_CACHE_CAP = 500;
 
-// The ORT runtime pair every worker spawn needs. Present locally in dev builds
-// (gen-ort.mjs copies them next to main.js) and in legacy full-zip installs;
-// community-directory installs get only main.js/manifest/styles, so the plugin
-// downloads the pair ONCE from a pinned CDN into its own ort/ folder and serves
-// it locally from then on (offline after first run). Any pair — local or just
-// downloaded — is validated against the EXACT byte sizes gen-ort.mjs pinned
-// (ORT_GLUE_BYTES/ORT_WASM_BYTES) before use: the pair must be the same build
-// the bundled transformers glue expects, or ORT init fails with cryptic
+// The ORT runtime pair every worker spawn needs. WHICH pair depends on the
+// device: the engine asks for "wasm" (CPU-only build) or "webgpu" (asyncify
+// build, the only one with the WebGPU EP) — see embeddings.ts runtimeBuildFor.
+// They are not interchangeable, so each is named, sized and cached separately.
+// Present locally in dev builds (gen-ort.mjs copies BOTH next to main.js) and in
+// legacy full-zip installs; community-directory installs get only
+// main.js/manifest/styles, so the plugin downloads the pair it needs ONCE from a
+// pinned CDN into its own ort/ folder and serves it locally from then on
+// (offline after first run) — only the pair actually used is ever fetched. Any
+// pair — local or just downloaded — is validated against the EXACT byte sizes
+// gen-ort.mjs pinned (ORT_RUNTIMES[build]) before use: the pair must be the same
+// build the bundled transformers glue expects, or ORT init fails with cryptic
 // mixed-build errors. Size mismatch (torn cache write, files from an install
 // carrying a different onnxruntime-web, CDN/proxy garbage) → re-download.
-const ORT_GLUE_FILE = "ort-wasm-simd-threaded.asyncify.mjs";
-const ORT_WASM_FILE = "ort-wasm-simd-threaded.asyncify.wasm";
 // CDN sources tried in order; both serve the pinned npm package.
 const ORT_CDNS = [
   ORT_WEB_CDN,
@@ -293,7 +291,7 @@ export default class RelatedNotesPlugin extends Plugin {
     // How the engine obtains the ORT wasm runtime for each worker spawn: read
     // from the plugin's ort/ folder, downloading it there once when absent.
     // Lazy — nothing is read or downloaded until the first embed needs it.
-    setOrtAssetLoader(() => this.loadOrtAssets());
+    setOrtAssetLoader((build) => this.loadOrtAssets(build));
 
     // Apply the WASM thread count BEFORE the engine's first init (configureEnv reads it).
     setEmbedThreads(threadsForSpeed(this.settings.indexSpeed));
@@ -517,11 +515,12 @@ export default class RelatedNotesPlugin extends Plugin {
   //   2) A one-time download (~24 MB) from a version-pinned CDN, size-validated
   //      the same way, then cached into ort/ (best effort) so every later spawn
   //      — and every later session — is served locally and works offline.
-  private async loadOrtAssets(): Promise<OrtAssets> {
+  private async loadOrtAssets(build: OrtRuntimeBuild): Promise<OrtAssets> {
+    const files = ORT_RUNTIMES[build];
     const adapter = this.app.vault.adapter;
     const dir = normalizePath(`${this.pluginDir()}/ort`);
-    const gluePath = normalizePath(`${dir}/${ORT_GLUE_FILE}`);
-    const wasmPath = normalizePath(`${dir}/${ORT_WASM_FILE}`);
+    const gluePath = normalizePath(`${dir}/${files.glue}`);
+    const wasmPath = normalizePath(`${dir}/${files.wasm}`);
 
     // 1) Local pair, size-validated against the pinned build.
     try {
@@ -531,8 +530,8 @@ export default class RelatedNotesPlugin extends Plugin {
           adapter.readBinary(wasmPath),
         ]);
         if (
-          glueBuf.byteLength === ORT_GLUE_BYTES &&
-          wasmBinary.byteLength === ORT_WASM_BYTES
+          glueBuf.byteLength === files.glueBytes &&
+          wasmBinary.byteLength === files.wasmBytes
         ) {
           return { glueText: new TextDecoder().decode(glueBuf), wasmBinary };
         }
@@ -540,7 +539,7 @@ export default class RelatedNotesPlugin extends Plugin {
         // carrying a different onnxruntime-web build — unusable with the glue
         // bundled into THIS version. Fall through and replace them.
         console.warn(
-          `[related-notes] local ORT runtime does not match the bundled build (glue ${glueBuf.byteLength}/${ORT_GLUE_BYTES} B, wasm ${wasmBinary.byteLength}/${ORT_WASM_BYTES} B); re-downloading`,
+          `[related-notes] local ORT ${build} runtime does not match the bundled build (glue ${glueBuf.byteLength}/${files.glueBytes} B, wasm ${wasmBinary.byteLength}/${files.wasmBytes} B); re-downloading`,
         );
       }
     } catch (e) {
@@ -552,19 +551,19 @@ export default class RelatedNotesPlugin extends Plugin {
     for (const base of ORT_CDNS) {
       try {
         const [glue, wasm] = await Promise.all([
-          requestUrl({ url: base + ORT_GLUE_FILE }),
-          requestUrl({ url: base + ORT_WASM_FILE }),
+          requestUrl({ url: base + files.glue }),
+          requestUrl({ url: base + files.wasm }),
         ]);
         const glueBinary = glue.arrayBuffer;
         const wasmBinary = wasm.arrayBuffer;
         // Validate BEFORE caching or serving: a proxy/captive-portal can return
         // 200 with garbage, which must not poison the cache or reach the worker.
         if (
-          glueBinary.byteLength !== ORT_GLUE_BYTES ||
-          wasmBinary.byteLength !== ORT_WASM_BYTES
+          glueBinary.byteLength !== files.glueBytes ||
+          wasmBinary.byteLength !== files.wasmBytes
         ) {
           failures.push(
-            `${base}: unexpected sizes (glue ${glueBinary.byteLength}/${ORT_GLUE_BYTES} B, wasm ${wasmBinary.byteLength}/${ORT_WASM_BYTES} B)`,
+            `${base}: unexpected sizes (glue ${glueBinary.byteLength}/${files.glueBytes} B, wasm ${wasmBinary.byteLength}/${files.wasmBytes} B)`,
           );
           continue;
         }
@@ -587,7 +586,7 @@ export default class RelatedNotesPlugin extends Plugin {
     // download from the model weights, so it can fail even when huggingface.co
     // is reachable — and vice versa).
     throw new Error(
-      `could not obtain the ONNX runtime (${ORT_WASM_FILE}) — ${failures.join("; ")}. ` +
+      `could not obtain the ONNX runtime (${files.wasm}) — ${failures.join("; ")}. ` +
         "Offline, or a firewall/proxy/antivirus blocks these URLs.",
     );
   }

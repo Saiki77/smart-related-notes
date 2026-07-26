@@ -44,17 +44,19 @@ jobs:
             exit 1
           fi
 
-      - name: Verify the ort wasm pair the plugin will download exists for this build
+      - name: Verify the ort wasm pairs the plugin will download exist for this build
         run: |
-          # The plugin downloads (or dev-copies) the ASYNCIFY glue+wasm pair and
-          # it MUST be the exact build transformers bundled, or WASM init fails.
-          # gen-ort.mjs materialises the pair from node_modules; fail the release
-          # if the expected files are missing (naming/layout drift upstream).
-          # Releases ship ONLY main.js/manifest.json/styles.css (all Obsidian
-          # downloads); the runtime is fetched once at first use and cached in
-          # the plugin folder.
-          test -f ort/ort-wasm-simd-threaded.asyncify.wasm
-          test -f ort/ort-wasm-simd-threaded.asyncify.mjs
+          # The plugin downloads (or dev-copies) a glue+wasm pair per device: the
+          # CPU-only pair for the WASM path, the asyncify pair for a WebGPU pin.
+          # Each MUST be the exact build transformers bundled, or WASM init fails,
+          # and the CPU pair is the ONLY one with a GatherBlockQuantized kernel —
+          # without it jina-v5-nano cannot load at all. gen-ort.mjs materialises
+          # both from node_modules and pins their names+sizes into ORT_RUNTIMES;
+          # fail the release if any expected file is missing (naming/layout drift
+          # upstream). Releases ship ONLY main.js/manifest.json/styles.css (all
+          # Obsidian downloads); the runtime is fetched once at first use and
+          # cached in the plugin folder.
+          node scripts/verify-ort-assets.mjs
           # Version read from the generated pin file (onnxruntime-web blocks
           # require('onnxruntime-web/package.json') via its "exports" map).
           ORT_VERSION=$(node -e "console.log((require('fs').readFileSync('src/ort-version.ts','utf8').match(/ORT_WEB_VERSION = \"([^\"]+)\"/)||[])[1]||'unknown')")
