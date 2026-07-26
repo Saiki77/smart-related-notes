@@ -56,11 +56,10 @@ jobs:
           # upstream). Releases ship ONLY main.js/manifest.json/styles.css (all
           # Obsidian downloads); the runtime is fetched once at first use and
           # cached in the plugin folder.
-          node scripts/verify-ort-assets.mjs
-          # Version read from the generated pin file (onnxruntime-web blocks
+          # The script also echoes the pinned onnxruntime-web version, read from
+          # the generated pin file (onnxruntime-web blocks
           # require('onnxruntime-web/package.json') via its "exports" map).
-          ORT_VERSION=$(node -e "console.log((require('fs').readFileSync('src/ort-version.ts','utf8').match(/ORT_WEB_VERSION = \"([^\"]+)\"/)||[])[1]||'unknown')")
-          echo "Runtime pinned to onnxruntime-web@${ORT_VERSION}."
+          node scripts/verify-ort-assets.mjs
 
       - name: Extract release notes from annotated tag
         run: |
