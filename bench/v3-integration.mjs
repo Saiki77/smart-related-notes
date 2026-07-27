@@ -157,18 +157,37 @@ console.log(`2. graph-surfaced cards: ${withReason} (of which ${graphSurfaced} b
 if (withReason === 0) failures.push("graph fusion surfaced nothing: no card carried a 'graph' reason");
 
 // 3. the displayed score must not contradict the order it is shown in
-let inversions = 0, pairs = 0;
+// A card CAN sit above one with a higher %, because the order fuses wording with
+// the link graph. What must never happen is an inversion with nothing behind it:
+// if the card placed higher has no graph evidence, then neither channel explains
+// its position and the ordering is simply wrong. Counting a rate and comparing it
+// to 0.25 could not tell those two cases apart, so it checked almost nothing.
+let inversions = 0, pairs = 0, unexplained = 0, boostDriven = 0;
+// Read the recorded lift rather than guessing from the reason pill: a card can be
+// moved by a positive RA z-score while its reason stays "related", so keying off
+// reason/linked alone flagged 32 legitimate fusions as unexplained.
+const hasGraphEvidence = (r) => (r.graphLift ?? 0) > 0 || r.connection === "linked";
 for (const f of files.slice(0, 120)) {
   const ranked = store.rank(f);
   for (let i = 1; i < ranked.length; i++) {
     pairs++;
-    if (ranked[i].score > ranked[i - 1].score + 0.02) inversions++;
+    if (ranked[i].score > ranked[i - 1].score + 0.02) {
+      inversions++;
+      if (!hasGraphEvidence(ranked[i - 1])) {
+        // Classify rather than just count. `score` is semantic + structural boost,
+        // but the fused order uses PRE-boost semantic (deliberately, so structure
+        // is not counted twice against the graph term). A note whose boost is what
+        // lifted its number therefore shows a higher % without moving up.
+        const b = (ranked[i].score ?? 0) - (ranked[i].semantic ?? ranked[i].score ?? 0);
+        if (b > 0.005) boostDriven++; else unexplained++;
+      }
+    }
   }
 }
 const invRate = pairs ? +(inversions / pairs).toFixed(3) : 0;
-console.log(`3. score/order inversions: ${inversions}/${pairs} (${invRate})`);
-if (invRate > 0.25) {
-  failures.push(`the % shown contradicts the list order in ${(invRate * 100).toFixed(0)}% of adjacent pairs`);
+console.log(`3. score/order inversions: ${inversions}/${pairs} (${invRate}), boost-driven: ${boostDriven}, unexplained: ${unexplained}`);
+if (unexplained > 0) {
+  failures.push(`${unexplained} cards outrank a higher-scoring card with no graph evidence to justify it`);
 }
 
 // 4. isolated areas must partition, including through graph nominations.
@@ -200,3 +219,8 @@ if (failures.length) {
   process.exit(1);
 }
 console.log("all integration assertions passed");
+// Exit explicitly. The store schedules debounced summary-label work, and those
+// pending timers keep the event loop alive after the assertions are done, so the
+// pass path hung forever while the fail path exited only because process.exit(1)
+// forced it. A green test that never returns is a hung CI job.
+process.exit(0);

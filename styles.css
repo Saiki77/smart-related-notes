@@ -479,3 +479,12 @@
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
 }
+
+/* Wording similarity that lost to the link graph: the number is real, it just is
+   not what decided the position. Dotted underline marks it as needing the
+   tooltip, without hiding a measurement the reader may still want. */
+.rn-score.rn-score-linkranked {
+  opacity: 0.72;
+  border-bottom: 1px dotted var(--text-faint);
+  cursor: help;
+}

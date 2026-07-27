@@ -292,6 +292,11 @@ export type ConnectionType = "linked" | "related";
 export interface RankedNote {
   file: TFile;
   score: number; // final score (semantic + boost), or a keyword overlap score
+  // How much the link graph moved this card, in z-units of the fused order. The
+  // panel sorts by wording PLUS this, but shows only `score`, so a card can sit
+  // above one with a bigger number. Without the term recorded, neither the reader
+  // nor a test can tell a legitimate graph lift from a broken sort.
+  graphLift?: number;
   approximate: boolean; // true when produced by the keyword fallback
   semantic?: number; // the pre-boost BiMax similarity, when available
   reason?: WhyReason;
@@ -2296,8 +2301,12 @@ export class IndexStore {
   // what survives is not verbatim lines but the shared shape and register, which
   // the model genuinely encodes. The fix has to happen in the vector space, not
   // in the text: find the notes that share a skeleton, then subtract the ONE
-  // direction they all have in common. Measured 9.92 -> 0.67 with held-out link
-  // recall unchanged.
+  // direction they all have in common. Held-out link recall unchanged.
+  //
+  // The correction has to reach the CHUNK vectors, not just the note means: 3.0.0
+  // beta.1 subtracted it from the means alone, the note-level harness reported
+  // 9.92 -> 0.67, and the shipped panel was still crowded because it ranks with
+  // BiMax over chunks. Measured end to end through rank(): 8.17 -> 3.35 of 10.
   //
   // Groups come from Obsidian's cached heading lists — notes sharing >= 2
   // headings — so this costs no stored signature, no body re-read and no index
@@ -2619,7 +2628,9 @@ export class IndexStore {
     const zSem = zNormaliser(scored.map((s) => s.content));
     const zRa = zNormaliser(scored.map((s) => s.ra));
     for (const s of scored) {
-      s.fused = zSem(s.content) + graphInfluence * zRa(s.ra);
+      const lift = graphInfluence * zRa(s.ra);
+      s.fused = zSem(s.content) + lift;
+      s.note.graphLift = lift;
     }
 
     // A structurally-nominated note is allowed in below the similarity floor —

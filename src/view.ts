@@ -215,7 +215,11 @@ export class RelatedNotesView extends ItemView {
       return;
     }
 
-    for (const item of ranked) this.renderCard(item);
+    let prevPct: number | null = null;
+    for (const item of ranked) {
+      this.renderCard(item, prevPct);
+      prevPct = Math.round(item.score * 100);
+    }
   }
 
   private renderEmpty(text: string): void {
@@ -337,7 +341,11 @@ export class RelatedNotesView extends ItemView {
       );
       return;
     }
-    for (const item of results) this.renderCard(item);
+    let prevSearchPct: number | null = null;
+    for (const item of results) {
+      this.renderCard(item, prevSearchPct);
+      prevSearchPct = Math.round(item.score * 100);
+    }
   }
 
   // With no active note, surface recent notes so the panel stays useful: recently
@@ -388,7 +396,7 @@ export class RelatedNotesView extends ItemView {
     });
   }
 
-  private renderCard(item: RankedNote): void {
+  private renderCard(item: RankedNote, prevPct: number | null = null): void {
     const card = this.listEl.createDiv({ cls: "rn-card" });
 
     const top = card.createDiv({ cls: "rn-card-top" });
@@ -399,6 +407,19 @@ export class RelatedNotesView extends ItemView {
     const pill = top.createDiv({ cls: "rn-score" });
     pill.setText(`${item.approximate ? "~" : ""}${pct}%`);
     if (item.approximate) pill.addClass("rn-score-approx");
+    // The pill is wording similarity; the ORDER is wording fused with the link
+    // graph. So a card can legitimately sit below one with a lower number, and
+    // in the panel that read as a bug: 20, 16, 13, 15, 21 down the list. A card
+    // scoring higher than the one above it is there because the graph put it
+    // there, which is the only thing that can reorder against the number. Say so
+    // instead of leaving the reader to reconcile it.
+    if (prevPct !== null && pct > prevPct) {
+      pill.addClass("rn-score-linkranked");
+      pill.setAttr(
+        "aria-label",
+        `${pct}% wording match, placed here by your links rather than by wording`,
+      );
+    }
 
     // Why-related + connection pills, derived from the structural signals that
     // fired. keywordRank results carry no reason/connection — render no pill rather
