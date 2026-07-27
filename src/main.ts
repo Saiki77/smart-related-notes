@@ -1586,7 +1586,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     new Setting(host)
       .setName("Indexing speed")
       .setDesc(
-        "CPU threads used while indexing. Editing one note stays fast at any setting. Changing this rebuilds the index.",
+        "CPU threads used while indexing. Ignored by jina-v5-nano, which is faster on one. Changing this rebuilds the index.",
       )
       .addDropdown((d) =>
         d

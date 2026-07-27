@@ -2,6 +2,7 @@ import { App, TFile, Notice, normalizePath, debounce, type Debouncer } from "obs
 import {
   EmbeddingEngine,
   modelUsesWholeNote,
+  type EmbedKind,
   type ProgressCallback,
 } from "./embeddings";
 import { yieldToUI } from "./async-yield";
@@ -88,6 +89,28 @@ const EMPTY_AREAS: ReadonlySet<string> = new Set<string>(); // shared "no isolat
 // model's positional limit rather than erroring at the ONNX layer.
 const WHOLE_NOTE_CHARS = 10000;
 const IDEA_UNIT_CHARS = 3000; // a single idea (~200-500 words) fits whole at the model
+
+// How a note is cut into embed inputs. "auto" is the strategy the model asks for;
+// the other two are progressively smaller retries for a note the model cannot
+// handle, split at boundaries the note already has. See embedNoteDegrading.
+type ChunkMode = "auto" | "ideas" | "windows";
+
+// True when an embed failed because the input was too big for the runtime, rather
+// than because the runtime is unavailable. Retrying with smaller inputs only helps
+// for the former; for a missing model or a dead worker it would just repeat a slow
+// failure once per tier per note. The wasm heap runs out in several different ways
+// depending on which allocation overflows first, hence the several spellings.
+function isCapacityError(e: unknown): boolean {
+  const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
+  return (
+    msg.includes("memory access out of bounds") ||
+    msg.includes("bad_alloc") ||
+    msg.includes("integer overflow") ||
+    msg.includes("out of memory") ||
+    msg.includes("cannot enlarge memory") ||
+    msg.includes("maximum call stack")
+  );
+}
 // Tiny DE+EN stopword set for lexical-cohesion overlap (content words only).
 const IDEA_STOPWORDS = new Set([
   "the", "and", "for", "are", "but", "not", "you", "all", "any", "can", "her", "was",
@@ -1459,17 +1482,27 @@ export class IndexStore {
   //   chunk[2..] = one chunk per IDEA, each idea's full text embedded whole.
   // Ranking then leads with the strong whole-note cosine and refines with idea-level
   // biMax — the user's "whole-note performance, fed into the idea extractors".
-  private chunkNoteWholeNote(file: TFile, body: string, meta: string): NoteChunk[] {
+  private chunkNoteWholeNote(
+    file: TFile,
+    body: string,
+    meta: string,
+    skipWholeNote = false,
+  ): NoteChunk[] {
     const titleEmbed = meta ? `${file.basename}. ${meta}` : undefined;
-    const cleanBody = stripMarkdown(body);
-    const wholeText = [`${file.basename}.`, meta, cleanBody]
-      .filter((s) => s.length > 0)
-      .join(" ")
-      .slice(0, WHOLE_NOTE_CHARS);
-    const chunks: NoteChunk[] = [
-      { text: file.basename, isTitle: true, isMean: true, embedText: wholeText },
-      { text: file.basename, isTitle: true, embedText: titleEmbed },
-    ];
+    const chunks: NoteChunk[] = [];
+    // The whole-note input: the single largest thing the model is ever asked to
+    // embed, and the one that fails on a long token-dense note. Omitted on the
+    // "ideas" retry tier, after which assembleEntry derives the note mean from the
+    // idea vectors instead (meanOf) — no whole-note embed, nothing truncated.
+    if (!skipWholeNote) {
+      const cleanBody = stripMarkdown(body);
+      const wholeText = [`${file.basename}.`, meta, cleanBody]
+        .filter((s) => s.length > 0)
+        .join(" ")
+        .slice(0, WHOLE_NOTE_CHARS);
+      chunks.push({ text: file.basename, isTitle: true, isMean: true, embedText: wholeText });
+    }
+    chunks.push({ text: file.basename, isTitle: true, embedText: titleEmbed });
 
     // Reuse the section -> window -> assignIdeas pipeline to find idea boundaries, then
     // join each idea's windows back into its full text (one embed per idea).
@@ -1504,8 +1537,11 @@ export class IndexStore {
       bucket.push(c.text);
     }
     const cap = this.maxChunks;
+    // Leading chunks are the title plus, unless skipped, the whole-note mean source.
+    // Subtract however many there actually are so the cap always counts IDEAS.
+    const lead = chunks.length;
     for (const id of order) {
-      if (chunks.length - 2 >= cap) break; // -2 for the mean + title chunks: cap IDEAS
+      if (chunks.length - lead >= cap) break;
       const text = (ideaText.get(id) ?? []).join(" ").trim().slice(0, IDEA_UNIT_CHARS);
       if (text.length > 0) chunks.push({ text, isTitle: false });
     }
@@ -1519,14 +1555,22 @@ export class IndexStore {
   // (not its stored text). When chunking is off, a single whole-note body chunk is
   // emitted. The whole note is covered (no char truncation); only the chunk COUNT is
   // capped, and the cap keeps every section represented so no section vanishes.
-  private chunkNote(file: TFile, body: string): NoteChunk[] {
+  private chunkNote(file: TFile, body: string, mode: ChunkMode = "auto"): NoteChunk[] {
     const meta = this.noteMetaText(file);
 
     // Whole-note strategy (jina-v5 et al.): the note mean is one embed of the WHOLE
     // note; each idea is embedded whole as a stored chunk. Keeps idea-level matching
     // while the primary ranking signal is the strong whole-note vector.
-    if (this.options.chunking && modelUsesWholeNote(this.engine.modelId)) {
-      return this.chunkNoteWholeNote(file, body, meta);
+    //
+    // "ideas" drops the whole-note input and keeps the idea chunks — the retry tier
+    // for a note the model cannot swallow whole (see embedNoteDegrading). "windows"
+    // forces the small-window path below, the last resort.
+    if (
+      mode !== "windows" &&
+      this.options.chunking &&
+      modelUsesWholeNote(this.engine.modelId)
+    ) {
+      return this.chunkNoteWholeNote(file, body, meta, mode === "ideas");
     }
 
     const chunks: NoteChunk[] = [{ text: file.basename, isTitle: true }];
@@ -1731,7 +1775,31 @@ export class IndexStore {
               // still persisted (when summaries are on) so the demand-time pass works.
             } catch (e) {
               if (!firstError) firstError = e;
-              console.warn("[related-notes] batch embed failed", e);
+              console.warn("[related-notes] batch embed failed, retrying per note", e);
+              // One oversized note used to cost its whole batch (BATCH_SIZE notes),
+              // because the batch is a single embedBatch call. Retry the batch one
+              // note at a time so only the genuinely-bad note is affected, and give
+              // each failing note the degrading split before giving up on it.
+              for (const { file, chunks } of pendingFiles) {
+                if (this.closed || this.buildStale) return;
+                const got = await this.embedNoteDegrading(file, chunks, "query", onProgress);
+                if (!got) continue;
+                const entry = this.assembleEntry(
+                  file,
+                  got.chunks,
+                  got.vectors,
+                  0,
+                  got.vectors.length,
+                );
+                if (entry) {
+                  next.set(file.path, entry);
+                  this.summaryCache.delete(file.path);
+                  this.dequant.delete(file.path);
+                  this.labelQueue.delete(file.path);
+                  this.labelDone.delete(file.path);
+                  embedded++;
+                }
+              }
             }
           }
 
@@ -1871,16 +1939,83 @@ export class IndexStore {
   }
 
   // Read + chunk a single note. Returns [] when the file is empty/unreadable.
-  private async readChunks(file: TFile): Promise<NoteChunk[]> {
+  private async readChunks(file: TFile, mode: ChunkMode = "auto"): Promise<NoteChunk[]> {
     try {
       const body = await this.app.vault.cachedRead(file);
-      const chunks = this.chunkNote(file, body);
+      const chunks = this.chunkNote(file, body, mode);
       // A title-only chunk set is still useful (very short note), so we keep it.
       return chunks.length > 0 ? chunks : [];
     } catch (e) {
       console.warn(`[related-notes] failed to read ${file.path}`, e);
       return [];
     }
+  }
+
+  // Embed ONE note, degrading to smaller inputs if the model cannot handle it.
+  //
+  // Why this exists: the whole-note strategy feeds a long-context model one input
+  // per note, and inference cost is roughly QUADRATIC in token length while the ORT
+  // wasm heap is hard-capped at 4 GiB (a 32-bit address space — machine RAM is
+  // irrelevant). A long, token-dense note therefore fails outright, with
+  // "memory access out of bounds", "std::bad_alloc" or a SafeInt overflow depending
+  // on which allocation blows first. WHOLE_NOTE_CHARS bounds CHARACTERS, and token
+  // density spans roughly 4x across scripts and content types (English prose vs CJK
+  // vs base64), so no character budget can reliably prevent it.
+  //
+  // Rather than predict token counts, react to the failure and retry with smaller
+  // inputs, split at boundaries that already exist:
+  //   1. "auto"    — the strategy the model asked for (one whole-note input).
+  //   2. "ideas"   — drop the whole-note input, keep the per-IDEA chunks. Ideas are
+  //                  section/heading-derived, so this splits where the note itself
+  //                  does. The note mean becomes the centroid of those vectors,
+  //                  which assembleEntry already handles.
+  //   3. "windows" — the ~480-char window path the other models use. Small enough
+  //                  that nothing realistic can exceed it.
+  // A note that fails all three is skipped with its path named, and the build
+  // continues. Cost is paid only by notes that actually fail.
+  private async embedNoteDegrading(
+    file: TFile,
+    chunks: NoteChunk[],
+    kind: EmbedKind,
+    onProgress?: ProgressCallback,
+  ): Promise<{ chunks: NoteChunk[]; vectors: Float32Array[] } | null> {
+    const tiers: { mode: ChunkMode; chunks: NoteChunk[] | null }[] = [
+      { mode: "auto", chunks },
+      { mode: "ideas", chunks: null },
+      { mode: "windows", chunks: null },
+    ];
+    for (const tier of tiers) {
+      if (this.closed || this.buildStale) return null;
+      const use = tier.chunks ?? (await this.readChunks(file, tier.mode));
+      if (use.length === 0) continue;
+      try {
+        const vectors = await this.engine.embedBatch(
+          use.map((c) => chunkEmbedInput(c)),
+          kind,
+          onProgress,
+        );
+        if (tier.mode !== "auto") {
+          console.warn(
+            `[related-notes] ${file.path}: too large for the model, indexed with "${tier.mode}" splitting instead`,
+          );
+        }
+        return { chunks: use, vectors };
+      } catch (e) {
+        // Only a capacity failure is worth retrying smaller. Anything else (no
+        // model, dead worker, offline first run) fails the same way at every tier,
+        // so stop immediately rather than repeating a slow failure three times per
+        // note across the whole vault.
+        if (!isCapacityError(e)) {
+          console.warn(`[related-notes] ${file.path}: embed failed`, e);
+          return null;
+        }
+        if (tier === tiers[tiers.length - 1]) {
+          console.warn(`[related-notes] ${file.path}: skipped, too large even split`, e);
+          return null;
+        }
+      }
+    }
+    return null;
   }
 
   // Embed a single file end-to-end (used by the incremental path). One ONNX pass
@@ -1891,20 +2026,14 @@ export class IndexStore {
   ): Promise<IndexEntry | null> {
     const chunks = await this.readChunks(file);
     if (chunks.length === 0) return null;
-    try {
-      const vectors = await this.engine.embedBatch(
-        chunks.map(chunkEmbedInput),
-        "query",
-        onProgress,
-      );
-      // LAZY LABELS: no keyphrase pass here either — the label is computed on first
-      // getSummary() demand. The entry carries chunkTexts (when summaries are on) so
-      // that demand-time pass has its source text.
-      return this.assembleEntry(file, chunks, vectors, 0, vectors.length);
-    } catch (e) {
-      console.warn(`[related-notes] failed to embed ${file.path}`, e);
-      return null;
-    }
+    // Same degrading retry as the full build: editing one oversized note must not
+    // leave it permanently unindexed.
+    const got = await this.embedNoteDegrading(file, chunks, "query", onProgress);
+    if (!got) return null;
+    // LAZY LABELS: no keyphrase pass here either — the label is computed on first
+    // getSummary() demand. The entry carries chunkTexts (when summaries are on) so
+    // that demand-time pass has its source text.
+    return this.assembleEntry(file, got.chunks, got.vectors, 0, got.vectors.length);
   }
 
   // --- incremental updates ---------------------------------------------------

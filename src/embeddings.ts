@@ -27,6 +27,7 @@ export {
 } from "./model-spec";
 
 import workerSource from "virtual:embed-worker";
+import { modelUsesWholeNote as usesWholeNote } from "./model-spec";
 import type { DevicePref, EmbedKind, ProgressCallback } from "./model-spec";
 import type {
   EmbedRequest,
@@ -108,6 +109,21 @@ function webgpuAvailable(): Promise<boolean> {
 async function runtimeBuildFor(devicePref: DevicePref): Promise<OrtRuntimeBuild> {
   if (devicePref !== "webgpu") return "wasm";
   return (await webgpuAvailable()) ? "webgpu" : "wasm";
+}
+
+// Threads for THIS model. Whole-note models are pinned to one thread on purpose.
+//
+// They embed a single long input per note — last-token pooling is only correct
+// without right-padding, so the worker cannot batch and threads have nothing to
+// parallelise across. All they can do is split one forward pass, which measured
+// SLOWER than single-threaded on jina-v5-nano (a 10,000-char note, 14 cores):
+//   1 thread ~5.0s   4 threads ~7.2s   8 threads ~5.2s
+// The coordination costs more than the work it splits, and the default (4) was the
+// worst of the three. So "Indexing speed" is deliberately ignored here; it still
+// applies to the batching models, where threads do pay off.
+function resolveThreadsFor(modelId: string): number {
+  if (usesWholeNote(modelId)) return 1;
+  return resolveThreads();
 }
 
 function resolveThreads(): number {
@@ -402,7 +418,7 @@ export class EmbeddingEngine {
       if (this.generation !== gen) throw new Error("engine disposed");
       session = new WorkerSession(workerSource);
       this.session = session;
-      const threads = resolveThreads();
+      const threads = resolveThreadsFor(this.modelId);
       try {
         await session.initModel(
           this.modelId,
