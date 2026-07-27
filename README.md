@@ -22,7 +22,7 @@ model download it works **fully offline**, and it understands German, English an
 ## What's new in 3.0
 
 <p align="center">
-  <img src="docs/whats-new-3.svg" alt="What's new in 3.0: held-out link recall up from 0.66 to 0.75, 60% of the connections wording cannot see now recovered, daily-note crowding down from 9.9 of 10 to 0.7, cluster purity 0.65 against a 0.29 baseline; four new features: link-graph ranking, surprising connections, a vault map, and template de-crowding" width="880">
+  <img src="docs/whats-new-3.svg" alt="What's new in 3.0: held-out link recall up from 0.66 to 0.75, 60% of the connections wording cannot see now recovered, daily-note crowding down from 8.2 of 10 to 3.4, cluster purity 0.65 against a 0.29 baseline; four new features: link-graph ranking, surprising connections, a vault map and template de-crowding" width="880">
 </p>
 
 Ranking stopped being about wording alone. The panel now also reads the shape of

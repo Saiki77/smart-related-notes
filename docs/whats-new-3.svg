@@ -35,10 +35,10 @@
     <g transform="translate(566,0)">
       <rect x="0" y="0" width="262" height="188" rx="14" fill="#15151b" stroke="#2a2a34"/>
       <text x="20" y="32" fill="#8a8f9e" font-size="13">Daily notes stop crowding out</text>
-      <text x="20" y="92" fill="#52c8d0" font-size="44" font-weight="600">0.7</text>
-      <text x="100" y="92" fill="#6b7080" font-size="20">from 9.9 of 10</text>
+      <text x="20" y="92" fill="#52c8d0" font-size="44" font-weight="600">3.4</text>
+      <text x="100" y="92" fill="#6b7080" font-size="20">from 8.2 of 10</text>
       <rect x="20" y="112" width="222" height="8" rx="4" fill="#23232d"/>
-      <rect x="20" y="112" width="16" height="8" rx="4" fill="#52c8d0"/>
+      <rect x="20" y="112" width="76" height="8" rx="4" fill="#52c8d0"/>
       <text x="20" y="152" fill="#8a8f9e" font-size="12.5">A shared template used to decide</text>
       <text x="20" y="170" fill="#8a8f9e" font-size="12.5">the ranking. Now it does not.</text>
     </g>
