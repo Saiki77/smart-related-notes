@@ -3,7 +3,7 @@
   <rect x="0.5" y="0.5" width="1199" height="759" rx="19.5" fill="none" stroke="#2e2e38" stroke-width="1"/>
 
   <text x="56" y="68" fill="#ededf2" font-size="32" font-weight="600" letter-spacing="-0.4">What's new in 3.0</text>
-  <text x="56" y="106" fill="#a7a7b4" font-size="18">Ranking stopped being about wording alone. Every number below is held-out on a 494-note vault.</text>
+  <text x="56" y="106" fill="#a7a7b4" font-size="18">Ranking stopped being about wording alone. Measured on a 494-note vault; recall on held-out links.</text>
 
   <!-- ===================== the numbers ===================== -->
   <g transform="translate(56,142)">

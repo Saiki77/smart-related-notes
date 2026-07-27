@@ -2,16 +2,16 @@
 <title>How Smart Related Notes works (landscape): mechanism, pipeline, vectors to ranks, and concept search</title>
 <desc>A two-column landscape version. Left: how the embedding model infers the One Ring is an item, and the chunk-embed-rank pipeline. Right: how vectors become ranks and clusters, and concept search returning member notes.</desc>
 <style>
-text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
+text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;}
 .h{font-size:22px;font-weight:600;}.sh{font-size:15px;font-weight:600;}.mut{font-size:12px;}.bx{font-size:13px;font-weight:600;}.chp{font-size:11px;}
-.map{fill:none;stroke:#30363d;}.div{stroke:#30363d;}
-.cA{fill:#16233f;stroke:#5b8def;}.cB{fill:#0c2a27;stroke:#2dd4bf;}.cC{fill:#342810;stroke:#fbbf24;}.cG{fill:#11301d;stroke:#4ade80;}.cI{fill:#1f2733;stroke:#64748b;}
-.chip{fill:#161b22;stroke:#30363d;}.cloudA{fill:none;stroke:#5b8def;stroke-dasharray:5 4;}.cloudC{fill:none;stroke:#fbbf24;stroke-dasharray:5 4;}.dA{fill:#5b8def;}.dC{fill:#fbbf24;}.ringA{fill:none;stroke:#5b8def;stroke-width:1.5;}.ringC{fill:none;stroke:#fbbf24;stroke-width:1.5;}
-.tInk{fill:#e6edf3;}.tMut{fill:#9aa4b2;}.tA{fill:#bcd0ff;}.tB{fill:#99f6e4;}.tC{fill:#fde68a;}.tG{fill:#86efac;}.tI{fill:#cbd5e1;}
-.arw{stroke:#6b7280;stroke-width:1.5;fill:none;}.arwf{fill:#6b7280;}
+.map{fill:none;stroke:#2a2a34;}.div{stroke:#2a2a34;}
+.cA{fill:#171a2c;stroke:#3a4270;}.cB{fill:#141a16;stroke:#2a3a30;}.cC{fill:#2e2410;stroke:#6b5420;}.cG{fill:#122a1c;stroke:#255c3a;}.cI{fill:#1e1e27;stroke:#3a3a48;}
+.chip{fill:#15151b;stroke:#2a2a34;}.cloudA{fill:none;stroke:#3a4270;stroke-dasharray:5 4;}.cloudC{fill:none;stroke:#6b5420;stroke-dasharray:5 4;}.dA{fill:#3a4270;}.dC{fill:#6b5420;}.ringA{fill:none;stroke:#3a4270;stroke-width:1.5;}.ringC{fill:none;stroke:#6b5420;stroke-width:1.5;}
+.tInk{fill:#ededf2;}.tMut{fill:#8a8f9e;}.tA{fill:#8a93c8;}.tB{fill:#6f9e85;}.tC{fill:#e6c074;}.tG{fill:#8ee8ba;}.tI{fill:#c8cbd6;}
+.arw{stroke:#5a6070;stroke-width:1.5;fill:none;}.arwf{fill:#5a6070;}
 </style>
 <defs><marker id="m" markerWidth="8" markerHeight="8" refX="5.5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" class="arwf"/></marker></defs>
-<rect x="0" y="0" width="1340" height="770" fill="#0d1117"/>
+<rect x="0" y="0" width="1340" height="770" fill="#191920"/>
 
 <text class="h tInk" x="40" y="48">How Smart Related Notes works</text>
 <text class="mut tMut" x="40" y="72">it finds related notes by meaning, and infers your vault's structure with no tags or links. local and offline.</text>

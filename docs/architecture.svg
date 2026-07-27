@@ -1,19 +1,21 @@
 <svg viewBox="0 0 680 1430" role="img" xmlns="http://www.w3.org/2000/svg">
-<title>How Smart Related Notes works: inferring structure from meaning, the pipeline, and concept search</title>
+<title>How Smart Related Notes works: inferring structure from meaning, the pipeline, link-graph ranking, and concept search (in design)</title>
 <desc>A tall document. Section 1 shows how the embedding model knows "The One Ring" is an item and "Frodo" is a character from their words alone. Section 2 is the chunk-embed-rank pipeline. Section 3 explains how vectors become ranks and clusters. Section 4 shows concept search returning member notes for a category query.</desc>
 <style>
-text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
+text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;}
 .h{font-size:20px;font-weight:600;}.sh{font-size:15px;font-weight:600;}.mut{font-size:12px;}.bx{font-size:13px;font-weight:600;}.chp{font-size:11px;}
-.map{fill:none;stroke:#30363d;}.div{stroke:#30363d;}
-.cA{fill:#16233f;stroke:#5b8def;}.cB{fill:#0c2a27;stroke:#2dd4bf;}.cC{fill:#342810;stroke:#fbbf24;}.cG{fill:#11301d;stroke:#4ade80;}.cI{fill:#1f2733;stroke:#64748b;}
-.chip{fill:#161b22;stroke:#30363d;}.cloudA{fill:none;stroke:#5b8def;stroke-dasharray:5 4;}.cloudC{fill:none;stroke:#fbbf24;stroke-dasharray:5 4;}.dA{fill:#5b8def;}.dC{fill:#fbbf24;}.ringA{fill:none;stroke:#5b8def;stroke-width:1.5;}.ringC{fill:none;stroke:#fbbf24;stroke-width:1.5;}
-.tInk{fill:#e6edf3;}.tMut{fill:#9aa4b2;}.tA{fill:#bcd0ff;}.tB{fill:#99f6e4;}.tC{fill:#fde68a;}.tG{fill:#86efac;}.tI{fill:#cbd5e1;}
-.arw{stroke:#6b7280;stroke-width:1.5;fill:none;}.arwf{fill:#6b7280;}
+.map{fill:none;stroke:#2a2a34;}.div{stroke:#2a2a34;}
+.cA{fill:#171a2c;stroke:#3a4270;}.cB{fill:#141a16;stroke:#2a3a30;}.cC{fill:#2e2410;stroke:#6b5420;}.cG{fill:#122a1c;stroke:#255c3a;}.cI{fill:#1e1e27;stroke:#3a3a48;}
+.chip{fill:#15151b;stroke:#2a2a34;}.cloudA{fill:none;stroke:#3a4270;stroke-dasharray:5 4;}.cloudC{fill:none;stroke:#6b5420;stroke-dasharray:5 4;}.dA{fill:#3a4270;}.dC{fill:#6b5420;}.ringA{fill:none;stroke:#3a4270;stroke-width:1.5;}.ringC{fill:none;stroke:#6b5420;stroke-width:1.5;}
+.tInk{fill:#ededf2;}.tMut{fill:#8a8f9e;}.tA{fill:#8a93c8;}.tB{fill:#6f9e85;}.tC{fill:#e6c074;}.tG{fill:#8ee8ba;}.tI{fill:#c8cbd6;}
+.arw{stroke:#5a6070;stroke-width:1.5;fill:none;}.arwf{fill:#5a6070;}
 </style>
 <defs><marker id="m" markerWidth="8" markerHeight="8" refX="5.5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" class="arwf"/></marker></defs>
+<rect width="680" height="1430" rx="20" fill="#191920" stroke="#2e2e38"/>
+
 
 <text class="h tInk" x="40" y="46">How Smart Related Notes works</text>
-<text class="mut tMut" x="40" y="70">it finds related notes by meaning, and infers your vault's structure without tags or links. local and offline.</text>
+<text class="mut tMut" x="40" y="70">it ranks by meaning fused with the shape of your own links, and infers structure without tags. local and offline.</text>
 <line class="div" x1="40" y1="90" x2="640" y2="90"/>
 
 <text class="sh tInk" x="40" y="122">1 · How does it know the One Ring is an item, not a character?</text>
@@ -43,13 +45,13 @@ text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
 <text class="mut tMut" x="40" y="482">chunk · structure-aware</text>
 <rect class="cA" x="40" y="492" width="86" height="46" rx="8"/><text class="bx tA" x="83" y="516" text-anchor="middle">Note</text><text class="chp tA" x="83" y="530" text-anchor="middle">title, body, tags</text>
 <rect class="cA" x="150" y="492" width="104" height="46" rx="8"/><text class="bx tA" x="202" y="516" text-anchor="middle">Sections</text><text class="chp tA" x="202" y="530" text-anchor="middle">by heading</text>
-<rect class="cA" x="282" y="492" width="104" height="46" rx="8"/><text class="bx tA" x="334" y="516" text-anchor="middle">Ideas</text><text class="chp tA" x="334" y="530" text-anchor="middle">~200-500 words</text>
-<rect class="cA" x="414" y="492" width="124" height="46" rx="8"/><text class="bx tA" x="476" y="516" text-anchor="middle">Passages</text><text class="chp tA" x="476" y="530" text-anchor="middle">token-safe windows</text>
+<rect class="cA" x="282" y="492" width="104" height="46" rx="8"/><text class="bx tA" x="334" y="516" text-anchor="middle">Passages</text><text class="chp tA" x="334" y="530" text-anchor="middle">token-safe windows</text>
+<rect class="cA" x="414" y="492" width="124" height="46" rx="8"/><text class="bx tA" x="476" y="516" text-anchor="middle">Ideas</text><text class="chp tA" x="476" y="530" text-anchor="middle">~200-500 words</text>
 <line class="arw" x1="126" y1="515" x2="148" y2="515" marker-end="url(#m)"/>
 <line class="arw" x1="254" y1="515" x2="280" y2="515" marker-end="url(#m)"/>
 <line class="arw" x1="386" y1="515" x2="412" y2="515" marker-end="url(#m)"/>
 <line class="arw" x1="300" y1="538" x2="300" y2="562" marker-end="url(#m)"/>
-<text class="mut tMut" x="40" y="578">embed · multi-granularity · int8 chunks · mean-centered · MiniLM or jina-v5</text>
+<text class="mut tMut" x="40" y="578">embed · multi-granularity · int8 chunks · mean-centered · template direction removed</text>
 <rect class="cB" x="40" y="588" width="182" height="46" rx="8"/><text class="bx tB" x="131" y="612" text-anchor="middle">Whole-note vector</text><text class="chp tB" x="131" y="626" text-anchor="middle">the note's gist</text>
 <rect class="cB" x="244" y="588" width="156" height="46" rx="8"/><text class="bx tB" x="322" y="612" text-anchor="middle">Idea vectors</text><text class="chp tB" x="322" y="626" text-anchor="middle">one per idea</text>
 <rect class="cB" x="424" y="588" width="182" height="46" rx="8"/><text class="bx tB" x="515" y="612" text-anchor="middle">Passage vectors</text><text class="chp tB" x="515" y="626" text-anchor="middle">fine detail</text>
@@ -57,7 +59,7 @@ text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
 <text class="mut tMut" x="40" y="674">rank · multi-stage funnel</text>
 <rect class="cA" x="40" y="684" width="128" height="46" rx="8"/><text class="bx tA" x="104" y="708" text-anchor="middle">Stage 1</text><text class="chp tA" x="104" y="722" text-anchor="middle">overall cosine</text>
 <rect class="cA" x="190" y="684" width="150" height="46" rx="8"/><text class="bx tA" x="265" y="708" text-anchor="middle">Stage 2</text><text class="chp tA" x="265" y="722" text-anchor="middle">best idea / passage</text>
-<rect class="cA" x="362" y="684" width="114" height="46" rx="8"/><text class="bx tA" x="419" y="708" text-anchor="middle">+ boost</text><text class="chp tA" x="419" y="722" text-anchor="middle">links, tags</text>
+<rect class="cA" x="362" y="684" width="114" height="46" rx="8"/><text class="bx tA" x="419" y="708" text-anchor="middle">+ graph</text><text class="chp tA" x="419" y="722" text-anchor="middle">shared neighbours</text>
 <rect class="cG" x="498" y="684" width="110" height="46" rx="8"/><text class="bx tG" x="553" y="708" text-anchor="middle">Cards</text><text class="chp tG" x="553" y="722" text-anchor="middle">ranked</text>
 <line class="arw" x1="168" y1="707" x2="188" y2="707" marker-end="url(#m)"/>
 <line class="arw" x1="340" y1="707" x2="360" y2="707" marker-end="url(#m)"/>
@@ -65,10 +67,10 @@ text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
 <line class="div" x1="40" y1="754" x2="640" y2="754"/>
 
 <text class="sh tInk" x="40" y="786">3 · From vectors to ranks and structure</text>
-<text class="mut tMut" x="40" y="808">three things follow from the geometry alone</text>
+<text class="mut tMut" x="40" y="808">three things follow from the geometry, before the link graph is fused in</text>
 <rect class="cI" x="40" y="822" width="14" height="14" rx="3"/><text class="bx tInk" x="62" y="834">center</text><text class="mut tMut" x="140" y="834">subtract the average note, so the common theme cancels and distinctive meaning remains.</text>
 <rect class="cA" x="40" y="854" width="14" height="14" rx="3"/><text class="bx tInk" x="62" y="866">rank</text><text class="mut tMut" x="140" y="866">the nearest vectors are the most related; that is the ranked card list.</text>
-<rect class="cC" x="40" y="886" width="14" height="14" rx="3"/><text class="bx tInk" x="62" y="898">structure</text><text class="mut tMut" x="140" y="898">near notes form clusters = the categories; a query expands into one to list its members.</text>
+<rect class="cC" x="40" y="886" width="14" height="14" rx="3"/><text class="bx tInk" x="62" y="898">structure</text><text class="mut tMut" x="140" y="898">near notes form clusters; that is the vault map, labelled from the notes themselves.</text>
 <line class="div" x1="40" y1="926" x2="640" y2="926"/>
 
 <text class="sh tInk" x="40" y="958">4 · Answering a category query</text>

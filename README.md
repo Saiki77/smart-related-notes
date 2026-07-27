@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/hero.svg" alt="Smart Related Notes: the notes most related to what you're writing, found by meaning, running entirely on your machine" width="880">
+  <img src="docs/hero.svg" alt="Smart Related Notes: the notes most related to what you're writing, found by meaning and by your own links, running entirely on your machine" width="880">
 </p>
 
 # Smart Related Notes
@@ -15,9 +15,9 @@ model download it works **fully offline**, and it understands German, English an
 100+ other languages, so matches cross languages naturally.
 
 **Contents** &nbsp;·&nbsp; [What's new](#whats-new-in-30) &nbsp;·&nbsp;
-[Roadmap](#roadmap) &nbsp;·&nbsp; [Install](#install) &nbsp;·&nbsp;
-[What it does](#what-it-does) &nbsp;·&nbsp; [How it works](#how-it-works)
-&nbsp;·&nbsp; [Settings](#settings)
+[Roadmap](#roadmap) &nbsp;·&nbsp; [What it does](#what-it-does) &nbsp;·&nbsp;
+[How it works](#how-it-works) &nbsp;·&nbsp; [Settings](#settings)
+&nbsp;·&nbsp; [Install](#install)
 
 ## What's new in 3.0
 
@@ -71,26 +71,6 @@ knows:
 Ideas that fail their measurement get cut rather than shipped quietly. Bridges,
 analogy search, a duplicate alarm, a personal similarity metric and a keyword channel
 were each built, measured, and dropped.
-
-## Install
-
-### From a release
-
-Download `main.js`, `manifest.json`, and `styles.css` from the latest release into
-`.obsidian/plugins/smart-related-notes/`. On first use the plugin fetches, once,
-the version-pinned ONNX runtime (cached into its `ort/` folder) and the model
-weights; after that it works offline.
-
-### With BRAT
-
-Add this repository in [BRAT](https://github.com/TfTHacker/obsidian42-brat) and
-enable **Smart Related Notes** from the community-plugins list.
-
-On first launch the model weights download from the Hugging Face Hub with a progress
-notice, then cache. This happens once; after that the plugin works offline. The
-WebGPU (GPU) path uses fp32 weights (~470 MB for the default model); the WASM (CPU)
-path uses smaller quantized weights (~110 MB). The model is downloaded once per
-backend, then cached.
 
 ## What it does
 
@@ -188,7 +168,7 @@ is a clickable wikilink. Nothing is changed in your notes.
 ## How it works
 
 <p align="center">
-  <img src="docs/architecture.svg" alt="How Smart Related Notes works: how the embedding model infers 'The One Ring' is an item and 'Frodo' a character from their words alone; the chunk-embed-rank pipeline; how vectors become ranks and clusters; and concept search returning the member notes for a category query" width="720">
+  <img src="docs/architecture.svg" alt="How Smart Related Notes works: how the embedding model infers 'The One Ring' is an item and 'Frodo' a character from their words alone; the chunk-embed-rank pipeline; how vectors become ranks, the vault map, and the link-graph channel fused into the ranking funnel; and, still in design, concept search returning the member notes for a category query" width="880">
 </p>
 
 Each Markdown note is split into short passages (windows that fit the model's context),
@@ -290,6 +270,29 @@ tag-free concept search stands.
 
 Changing the model or compute device transparently rebuilds the index; unrelated
 changes (sliders, toggles) never trigger a re-embed.
+
+## Install
+
+**Settings -> Community plugins -> Browse -> "Smart Related Notes" -> Install.**
+That is the whole thing, and it is how almost everyone should install it.
+
+On first launch the model weights download from the Hugging Face Hub with a
+progress notice, then cache. This happens once; after that the plugin works
+offline. The WASM (CPU) path, the default, uses quantized weights (~110 MB); the
+optional WebGPU path uses fp32 weights (~470 MB for the default model). The model
+is downloaded once per backend, then cached. The plugin also fetches the
+version-pinned ONNX runtime once, into its own `ort/` folder.
+
+### Running the 3.0 beta
+
+The store serves the current stable release. 3.0 is still a pre-release, so
+installing from the store will not give you the features described at the top of
+this page. To run it, either add this repository in
+[BRAT](https://github.com/TfTHacker/obsidian42-brat), which will keep it updated,
+or download `main.js`, `manifest.json` and `styles.css` from the
+[latest release](https://github.com/Saiki77/smart-related-notes/releases) into
+`.obsidian/plugins/smart-related-notes/` yourself. It is a beta: unstable, and in
+progress.
 
 ## Requirements
 

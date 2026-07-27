@@ -158,6 +158,13 @@ correction happens in the vector space: group notes that share at least two head
 direction they all have in common, exactly as the corpus centroid is subtracted
 globally. Crowding drops to **0.67/10** with held-out link recall unchanged.
 
+That figure is measured on note-level vectors, and 3.0.0-beta.1 shipped a bug
+because of it: the correction reached only the Stage-1 means, while ranking runs
+BiMax over chunk vectors, which never saw it. The number to trust is the one taken
+through `rank()` itself by `bench/v3-integration.mjs`: **8.17/10 down to 3.35/10**,
+with the correction stubbed out and applied respectively. A harness that does not
+run the shipped code path cannot measure the shipped code path.
+
 ## 5. Roadmap: tag-free concept search
 
 The hardest open problem: a query like "characters" or "locations" should return the
