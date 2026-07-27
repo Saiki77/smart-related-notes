@@ -121,6 +121,10 @@ were each built, measured, and dropped.
   obvious siblings the way a similarity ranking does.
 
 <p align="center">
+  <img src="docs/feature-vault-map.svg" alt="A map of your whole vault: every note a point, placed so related notes sit together, coloured and named by cluster; 433 notes of the lab vault forming linear algebra, machine learning, patterns and databases, algorithms and search, daily notes and drafts, at cluster purity 0.65 against 0.29 for a shuffled baseline" width="880">
+</p>
+
+<p align="center">
   <img src="docs/feature-surprising.svg" alt="Surprising connections: a discovery list that cannot fill up with things you already knew, because pairs must be outside each other's top matches to qualify" width="880">
 </p>
 
