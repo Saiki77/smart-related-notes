@@ -782,6 +782,11 @@ class DequantCache {
   // Corpus centroid (anisotropy correction). When set, dequantized chunk rows are
   // mean-centered + re-normalized before caching, so BiMax consumes centered vectors.
   private centroid: Float32Array | null = null;
+  // Per-note TEMPLATE direction, for notes that belong to a template group. The
+  // note-level correction alone is not enough: it only reaches the Stage-1
+  // shortlist, while the score and the final order come from BiMax over these
+  // chunk rows. Applying it here is what actually de-crowds the results.
+  private templateDirs: ReadonlyMap<string, Float32Array> = new Map();
 
   constructor(cap: number) {
     this.cap = Math.max(DEQUANT_CACHE_FLOOR, cap);
@@ -792,6 +797,13 @@ class DequantCache {
   setCentroid(centroid: Float32Array | null): void {
     if (this.centroid === centroid) return;
     this.centroid = centroid;
+    this.cache.clear();
+  }
+
+  // Template directions changed (a note was added, edited or regrouped): drop the
+  // cached fp32 rows so they are rebuilt with the new correction.
+  setTemplateDirs(dirs: ReadonlyMap<string, Float32Array>): void {
+    this.templateDirs = dirs;
     this.cache.clear();
   }
 
@@ -824,6 +836,12 @@ class DequantCache {
     // baseline, similarity. No-op when no centroid is set (e.g. an empty corpus).
     if (this.centroid && dequantized && this.centroid.length === entry.dims) {
       centerChunksInPlace(f, entry.chunkCount, entry.dims, this.centroid);
+      // Then remove what this note shares with its template siblings, if any.
+      // Same operation, different direction: project it out and re-normalize.
+      const tpl = this.templateDirs.get(entry.path);
+      if (tpl && tpl.length === entry.dims) {
+        centerChunksInPlace(f, entry.chunkCount, entry.dims, tpl);
+      }
     }
     this.cache.set(entry.path, f);
     if (this.cache.size > this.cap) {
@@ -2286,7 +2304,11 @@ export class IndexStore {
   // format change. Groups smaller than MIN_TEMPLATE_GROUP are left alone: three
   // notes sharing "## Notes" is a coincidence, not a template.
   private subtractTemplateDirections(dims: number): void {
-    if (this.centeredMeans.size === 0) return;
+    const dirs = new Map<string, Float32Array>();
+    if (this.centeredMeans.size === 0) {
+      this.dequant.setTemplateDirs(dirs);
+      return;
+    }
     const groups = this.templateGroups();
     for (const members of groups) {
       if (members.length < MIN_TEMPLATE_GROUP) continue;
@@ -2302,8 +2324,12 @@ export class IndexStore {
         const v = this.centeredMeans.get(path);
         if (!v || v.length !== dims) continue;
         this.centeredMeans.set(path, centerVector(v, shared, dims));
+        dirs.set(path, shared);
       }
     }
+    // BiMax reads chunk rows, not these means, so the correction has to reach the
+    // dequant path as well or it never touches the ranking that is displayed.
+    this.dequant.setTemplateDirs(dirs);
   }
 
   // Connected components of "these two notes share at least 2 headings", over

@@ -646,9 +646,14 @@ export default class RelatedNotesPlugin extends Plugin {
   // (not the cheap mtime-reuse build), so it always reflects the current model and
   // settings instead of finishing instantly with the old vectors.
   async rebuildIndex(): Promise<void> {
+    // Asking to build IS choosing. The dropdown already shows a model (the default
+    // is preselected), so a user who opens settings and presses Rebuild has made a
+    // deliberate choice — but re-picking the value already displayed fires no
+    // change event, so the gate would never lift and the button would do nothing
+    // at all. Treat the press as the choice and get on with it.
     if (!this.settings.modelChosen) {
-      new Notice("Smart Related Notes: pick an embedding model in Settings first.", 8000);
-      return;
+      this.settings.modelChosen = true;
+      await this.saveSettings();
     }
     await this.store.build(undefined, true);
     this.getView()?.requestRender();
