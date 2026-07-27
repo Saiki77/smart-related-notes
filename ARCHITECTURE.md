@@ -106,12 +106,91 @@ widely and expensive compute narrowly:
 - **Search**: the sidebar search ranks by best-passage match plus a title/tag boost,
   not just the note average, and inherits whichever model is active.
 
+## 4b. The structural channel: ranking by the shape of your links
+
+Similarity answers "do these two notes say the same kind of thing". It cannot
+answer "do these two notes belong together", and on a real vault those come
+apart. **About 30% of the links a user actually made point at a note that is not
+in the source's content top-10**, and ranking by similarity alone can never surface
+those, by construction.
+
+So the ranker has a second, independent channel built from the link graph itself
+(`src/graph-signals.ts`), and the two are fused:
+
+- **Resource Allocation** scores a pair by the notes they *both* link to, weighted
+  `1/degree`. A shared neighbour with two links is strong evidence; one that links
+  to everything is nearly none. This is the scoring channel.
+- **Rooted PageRank** (a truncated restart walk) is the *nomination* channel: it is
+  the only way to enumerate candidates two and three hops out, which is where the
+  non-obvious pairs live. The content shortlist cannot contain them.
+- Both are z-normalised across the candidate pool and summed, so neither channel
+  dominates on scale and a vault with no links degrades cleanly to content-only.
+  Only the ORDER is fused; the score on the card stays the semantic one.
+
+Measured on a 494-note bilingual vault with 20% of links held out:
+
+| ranker | recall@10 (MiniLM) | recall@10 (jina-v5-nano) |
+| --- | --- | --- |
+| content only | 0.357 | 0.664 |
+| content + Resource Allocation | **0.651** | **0.745** |
+| content + RA + PageRank *as a score* | 0.653 | 0.719 |
+
+Two findings shaped the design. PageRank *as a score* is a wash on one model and a
+regression on the other, so it nominates but does not judge. And hubness correction
+(CSLS) of the content channel, an obvious-looking win, helped the weaker model by
+0.005 and cost the stronger one 0.030, so it is not in the product.
+
+The same machinery, run vault-wide and then filtered to pairs that are outside each
+other's content top-10, is **Surprising Connections** in the insights report: a
+discovery surface whose gate is non-obviousness itself, which is why it cannot
+collapse into a list of textbook siblings the way similarity ranking does.
+
+## 4c. Template de-crowding
+
+Notes written from one template are mutually similar for a reason unrelated to their
+content. Measured: every daily note's top-10 was **9.9/10 other daily notes**. The
+template, not the day, was doing the ranking.
+
+Stripping the boilerplate text before embedding barely moves it (9.92 → 9.0). What
+survives is the shared shape and register, which the model genuinely encodes, so the
+correction happens in the vector space: group notes that share at least two headings
+(free, since Obsidian caches them), and for each group of three or more, subtract the one
+direction they all have in common, exactly as the corpus centroid is subtracted
+globally. Crowding drops to **0.67/10** with held-out link recall unchanged.
+
 ## 5. Roadmap: tag-free concept search
 
 The hardest open problem: a query like "characters" or "locations" should return the
 **member** notes, and it must work even when the user has no tags, no map-of-content
 notes, and no useful link graph, by inferring the latent category from the vault's own
 patterns (the bottom half of the diagram above).
+
+> **Status (measured, 2026-07).** The cluster-seeded prototype design sketched
+> below was tested and **lost to plain cosine** (0.46 vs 0.58 mean
+> member-precision@10 over five category queries, and 0.0 on the cold-start
+> case). It is replaced. What was measured to work, on the same ground truth
+> (five curated map-of-content member lists, plus a folder with no
+> map-of-content as the cold-start case):
+>
+> | ranker | P@10, jina-v5-nano | P@10, MiniLM |
+> | --- | --- | --- |
+> | plain cosine | 0.633 | 0.033 |
+> | + generality penalty | 0.650 | 0.033 |
+> | + Rocchio feedback | 0.683 | 0.033 |
+> | + graph expansion | 0.717 | 0.033 |
+> | + title channel (**all**) | **0.783** | 0.417 |
+>
+> Cold start reaches **1.00** on the winning configuration. Four findings:
+> the query is one or two words, so it must also be matched against note
+> TITLES (same shape as the query) and not only against note bodies; pseudo-
+> relevance feedback and link-graph expansion from the seeds each add a little;
+> the generality penalty barely pays, so hubness is not the main problem here.
+>
+> The fourth finding is the important one: **this feature is model-gated.** A
+> symmetric paraphrase model is out of distribution comparing a two-word query
+> to a document, and no amount of re-ranking rescues it (0.417 at best, against
+> a 0.7 bar). Category search should therefore engage only on a model that can
+> handle short queries, and say so rather than quietly returning noise.
 
 Plain cosine is symmetric and ranks hypernyms poorly, so a note *about* characters
 always beats an individual character on "cosine to characters". The fix is

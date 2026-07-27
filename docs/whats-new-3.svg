@@ -1,0 +1,105 @@
+<svg viewBox="0 0 1200 760" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <rect width="1200" height="760" rx="20" fill="#191920"/>
+  <rect x="0.5" y="0.5" width="1199" height="759" rx="19.5" fill="none" stroke="#2e2e38" stroke-width="1"/>
+
+  <text x="56" y="68" fill="#ededf2" font-size="32" font-weight="600" letter-spacing="-0.4">What's new in 3.0</text>
+  <text x="56" y="106" fill="#a7a7b4" font-size="18">Ranking stopped being about wording alone. Every number below is held-out on a 494-note vault.</text>
+
+  <!-- ===================== the numbers ===================== -->
+  <g transform="translate(56,142)">
+    <!-- 1: link recall -->
+    <g transform="translate(0,0)">
+      <rect x="0" y="0" width="262" height="188" rx="14" fill="#15151b" stroke="#2a2a34"/>
+      <text x="20" y="32" fill="#8a8f9e" font-size="13">Finds the notes you would link</text>
+      <text x="20" y="92" fill="#4fc98a" font-size="44" font-weight="600">0.75</text>
+      <text x="126" y="92" fill="#6b7080" font-size="20">from 0.66</text>
+      <rect x="20" y="112" width="222" height="8" rx="4" fill="#23232d"/>
+      <rect x="20" y="112" width="195" height="8" rx="4" fill="#4fc98a"/>
+      <text x="20" y="152" fill="#8a8f9e" font-size="12.5">Share of your real links found in</text>
+      <text x="20" y="170" fill="#8a8f9e" font-size="12.5">the top 10, with 20% held back.</text>
+    </g>
+
+    <!-- 2: non-obvious -->
+    <g transform="translate(283,0)">
+      <rect x="0" y="0" width="262" height="188" rx="14" fill="#15151b" stroke="#2a2a34"/>
+      <text x="20" y="32" fill="#8a8f9e" font-size="13">Connections wording cannot see</text>
+      <text x="20" y="92" fill="#e0b45a" font-size="44" font-weight="600">60%</text>
+      <text x="126" y="92" fill="#6b7080" font-size="20">from none</text>
+      <rect x="20" y="112" width="222" height="8" rx="4" fill="#23232d"/>
+      <rect x="20" y="112" width="133" height="8" rx="4" fill="#e0b45a"/>
+      <text x="20" y="152" fill="#8a8f9e" font-size="12.5">A third of your links point where</text>
+      <text x="20" y="170" fill="#8a8f9e" font-size="12.5">similarity structurally cannot look.</text>
+    </g>
+
+    <!-- 3: crowding -->
+    <g transform="translate(566,0)">
+      <rect x="0" y="0" width="262" height="188" rx="14" fill="#15151b" stroke="#2a2a34"/>
+      <text x="20" y="32" fill="#8a8f9e" font-size="13">Daily notes stop crowding out</text>
+      <text x="20" y="92" fill="#52c8d0" font-size="44" font-weight="600">0.7</text>
+      <text x="100" y="92" fill="#6b7080" font-size="20">from 9.9 of 10</text>
+      <rect x="20" y="112" width="222" height="8" rx="4" fill="#23232d"/>
+      <rect x="20" y="112" width="16" height="8" rx="4" fill="#52c8d0"/>
+      <text x="20" y="152" fill="#8a8f9e" font-size="12.5">A shared template used to decide</text>
+      <text x="20" y="170" fill="#8a8f9e" font-size="12.5">the ranking. Now it does not.</text>
+    </g>
+
+    <!-- 4: clusters -->
+    <g transform="translate(849,0)">
+      <rect x="0" y="0" width="239" height="188" rx="14" fill="#15151b" stroke="#2a2a34"/>
+      <text x="20" y="32" fill="#8a8f9e" font-size="13">Clusters that are really there</text>
+      <text x="20" y="92" fill="#8a7ad0" font-size="44" font-weight="600">0.65</text>
+      <text x="126" y="92" fill="#6b7080" font-size="20">vs 0.29</text>
+      <rect x="20" y="112" width="199" height="8" rx="4" fill="#23232d"/>
+      <rect x="20" y="112" width="129" height="8" rx="4" fill="#8a7ad0"/>
+      <text x="20" y="152" fill="#8a8f9e" font-size="12.5">Cluster purity against a shuffled</text>
+      <text x="20" y="170" fill="#8a8f9e" font-size="12.5">baseline, so it is not chance.</text>
+    </g>
+  </g>
+
+  <!-- ===================== the features ===================== -->
+  <text x="56" y="392" fill="#ededf2" font-size="20" font-weight="600">Four new things</text>
+
+  <g transform="translate(56,414)">
+    <g transform="translate(0,0)">
+      <rect x="0" y="0" width="544" height="128" rx="14" fill="#141a16" stroke="#2a3a30"/>
+      <circle cx="34" cy="40" r="13" fill="#122a1c" stroke="#255c3a"/>
+      <path d="M28 40 L33 45 L41 34" stroke="#4fc98a" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="62" y="34" fill="#ededf2" font-size="16" font-weight="600">Link-graph ranking</text>
+      <text x="62" y="58" fill="#8a8f9e" font-size="13.5">The panel reads the shape of your links, not just your</text>
+      <text x="62" y="78" fill="#8a8f9e" font-size="13.5">words. When two notes share context you already</text>
+      <text x="62" y="98" fill="#8a8f9e" font-size="13.5">connected, the card says "via" the note that bridges them.</text>
+    </g>
+    <g transform="translate(566,0)">
+      <rect x="0" y="0" width="522" height="128" rx="14" fill="#141a16" stroke="#2a3a30"/>
+      <circle cx="34" cy="40" r="13" fill="#122a1c" stroke="#255c3a"/>
+      <path d="M28 40 L33 45 L41 34" stroke="#4fc98a" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="62" y="34" fill="#ededf2" font-size="16" font-weight="600">Surprising connections</text>
+      <text x="62" y="58" fill="#8a8f9e" font-size="13.5">A discovery list that cannot fill up with things you</text>
+      <text x="62" y="78" fill="#8a8f9e" font-size="13.5">already knew, because a pair only qualifies if each note</text>
+      <text x="62" y="98" fill="#8a8f9e" font-size="13.5">sits outside the other's top matches.</text>
+    </g>
+  </g>
+
+  <g transform="translate(56,558)">
+    <g transform="translate(0,0)">
+      <rect x="0" y="0" width="544" height="128" rx="14" fill="#141a16" stroke="#2a3a30"/>
+      <circle cx="34" cy="40" r="13" fill="#122a1c" stroke="#255c3a"/>
+      <path d="M28 40 L33 45 L41 34" stroke="#4fc98a" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="62" y="34" fill="#ededf2" font-size="16" font-weight="600">A map of your vault</text>
+      <text x="62" y="58" fill="#8a8f9e" font-size="13.5">Every note a point, placed so related notes sit together,</text>
+      <text x="62" y="78" fill="#8a8f9e" font-size="13.5">with each cluster named automatically. Click a point to</text>
+      <text x="62" y="98" fill="#8a8f9e" font-size="13.5">open it, click a cluster to hide it.</text>
+    </g>
+    <g transform="translate(566,0)">
+      <rect x="0" y="0" width="522" height="128" rx="14" fill="#141a16" stroke="#2a3a30"/>
+      <circle cx="34" cy="40" r="13" fill="#122a1c" stroke="#255c3a"/>
+      <path d="M28 40 L33 45 L41 34" stroke="#4fc98a" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="62" y="34" fill="#ededf2" font-size="16" font-weight="600">Template de-crowding</text>
+      <text x="62" y="58" fill="#8a8f9e" font-size="13.5">Notes written from one template used to match only</text>
+      <text x="62" y="78" fill="#8a8f9e" font-size="13.5">each other. The shared skeleton is now subtracted and</text>
+      <text x="62" y="98" fill="#8a8f9e" font-size="13.5">the content is left alone.</text>
+    </g>
+  </g>
+
+  <text x="56" y="722" fill="#6b7080" font-size="13">All of it runs on your machine. No cloud, no account, nothing sent anywhere.</text>
+</svg>
