@@ -6,6 +6,7 @@ import {
   type ProgressCallback,
 } from "./embeddings";
 import { yieldToUI } from "./async-yield";
+import { GraphSignals, zNormaliser } from "./graph-signals";
 import {
   cosineSimilarity,
   meanOf,
@@ -160,6 +161,21 @@ const COARSE_FLOOR_CENTERED = -0.1;
 // glows the math "Analysis" note when the note is actually on that topic.
 const GLOW_CONTEXT_FLOOR = 0.15;
 
+// How far BELOW minSimilarity a structurally-nominated note may sit and still be
+// shown. The graph is allowed to argue "these belong together" past the
+// similarity floor — that is the whole point of the second channel — but not
+// without limit, or a shared index note would drag in anything. 0.5 means a
+// note still needs half the configured similarity to qualify.
+const STRUCTURAL_FLOOR_RATIO = 0.5;
+
+// Template de-crowding (see subtractTemplateDirections). A group must have at
+// least this many members before we treat its shared direction as a template
+// rather than a coincidence.
+const MIN_TEMPLATE_GROUP = 3;
+// A heading this common across the vault carries no template evidence and pairing
+// its notes is quadratic, so it is skipped as a grouping key.
+const TEMPLATE_HEADING_MAX_DF = 400;
+
 // Hybrid structural boost weights and cap. boost is added to the semantic score
 // AFTER it is scaled into [0, B_MAX]; B_MAX itself comes from options
 // (structureInfluence) so the user can tune "structure influence". These weights
@@ -257,7 +273,11 @@ export type WhyKind =
   | "linked"
   | "shared-tags"
   | "co-cited"
-  | "semantic";
+  | "semantic"
+  // Surfaced by the STRUCTURAL channel: the link graph predicts this pair even
+  // though the embedding did not rank it highly. `detail` carries the shared
+  // neighbour that bridges them, so the card can say "connected via X".
+  | "graph";
 
 export interface WhyReason {
   kind: WhyKind;
@@ -287,6 +307,10 @@ export interface VaultInsights {
   suggestedLinks: { from: string; to: string; score: number }[]; // related, not yet linked
   // A note is missing a DISCRIMINATIVE tag that most of its semantic neighbours carry.
   suggestedTags: { path: string; tag: string; support: number; neighbors: number }[];
+  // Pairs the LINK GRAPH predicts belong together while the prose does not —
+  // each is outside the other's content top-10, so similarity ranking can never
+  // surface them. `via` is the shared note that bridges them (the receipt).
+  surprising: { a: string; b: string; via: string[]; score: number }[];
 }
 
 // Index lifecycle state, surfaced to the view for its status line.
@@ -312,6 +336,10 @@ export interface IndexStoreOptions {
   headingContext: boolean; // prefix each section's first chunk with a heading breadcrumb
   ideaInfluence: number; // 0..~0.6 rank-time blend of idea-level MaxSim into biMax (0 = off)
   isolatedAreas: string[]; // activated tag namespaces that form self-contained partitions
+  // Weight of the STRUCTURAL channel (link-graph prediction) in the fused rank.
+  // 0 = content only (pre-3.0 behaviour). Measured best around 1.0; the score
+  // shown on the card stays semantic either way — this only reorders.
+  graphInfluence: number;
 }
 
 type ProgressListener = (p: IndexProgress) => void;
@@ -372,6 +400,13 @@ function cleanMarkdownInline(content: string): string {
   // HTML tags.
   text = text.replace(/<[^>]+>/g, " ");
   return text;
+}
+
+// "Concepts/Hash Function.md" -> "Hash Function". Used for graph receipts, where
+// the shared neighbour is shown to the user as a note name, not a path.
+function basenameOf(path: string): string {
+  const file = path.slice(path.lastIndexOf("/") + 1);
+  return file.endsWith(".md") ? file.slice(0, -3) : file;
 }
 
 // Strip markdown/frontmatter to a single line of plain prose. Used by the snippet
@@ -873,6 +908,11 @@ export class IndexStore {
   // shortlist width in updateOptions(); biMax() resolves chunks through it.
   private dequant: DequantCache;
 
+  // The structural channel (link-graph link prediction). Built lazily from
+  // metadataCache.resolvedLinks and invalidated whenever links change; it holds no
+  // vectors and needs no persistence, so it is safe to rebuild on demand.
+  private graph: GraphSignals;
+
   // LAZY keyphrase labels. A note's label is computed on FIRST getSummary() demand,
   // not at build time. `labelQueue` holds paths pending a (debounced, batched)
   // compute; `labelDone` holds paths already attempted (so a note whose label
@@ -927,6 +967,7 @@ export class IndexStore {
     this.configDir = configDir;
     this.options = options;
     this.dequant = new DequantCache(this.cacheCapFor(options));
+    this.graph = new GraphSignals(app);
     this.debouncedDrainLabels = debounce(
       () => void this.drainLabels(),
       LABEL_DRAIN_DEBOUNCE_MS,
@@ -938,6 +979,31 @@ export class IndexStore {
   // lazily-computed label can refresh its card without the store holding a view ref.
   setRenderHook(fn: () => void): void {
     this.renderHook = fn;
+  }
+
+  // Links changed somewhere in the vault: drop the structural channel's adjacency
+  // so the next rank rebuilds it. No vectors are touched.
+  invalidateGraph(): void {
+    this.graph.invalidate();
+  }
+
+  // Input for the vault map: every indexed note's CENTERED vector, which is the
+  // same geometry the panel ranks in, so the picture matches what the plugin
+  // actually believes. Hub/index notes are kept: they are part of the vault's
+  // shape even though they make poor suggestions.
+  vaultMapInput(): { path: string; title: string; vec: Float32Array }[] {
+    const out: { path: string; title: string; vec: Float32Array }[] = [];
+    for (const entry of this.entries.values()) {
+      const vec = this.centeredMean(entry);
+      if (!vec || vec.length === 0) continue;
+      const base = entry.path.slice(entry.path.lastIndexOf("/") + 1);
+      out.push({
+        path: entry.path,
+        title: base.endsWith(".md") ? base.slice(0, -3) : base,
+        vec,
+      });
+    }
+    return out;
   }
 
   // The shortlist Stage-1 -> Stage-2 funnel width (also the slice width in rank()).
@@ -989,6 +1055,9 @@ export class IndexStore {
   trimIdleCaches(): void {
     this.dequant.clear();
     this.wordCache.clear();
+    // The link graph is derived from resolvedLinks in one pass and needs no
+    // persistence, so holding it while idle buys nothing.
+    this.graph.invalidate();
   }
 
   // Plugin unload: stop the embedding loops promptly. The engine is disposed
@@ -1031,6 +1100,45 @@ export class IndexStore {
       scored.push({ entry, semantic: cosineSimilarity(vec, entry.meanVector) });
     }
     scored.sort((a, b) => b.semantic - a.semantic);
+
+    // Same fusion the panel uses: when we know which note the cursor is in, the
+    // link graph gets a vote on what belongs here. Typing `[[` is exactly the
+    // moment a shared-context suggestion is most useful.
+    //
+    // It must run over a BOUNDED pool, for the same reason rank() normalises over
+    // its shortlist. RA is zero for all but a handful of notes, so z-normalising
+    // it across the whole vault gives those few a z of roughly sqrt(n/k) — about
+    // +10 on a 5k vault — against a content z that spans maybe +/-3. Every note
+    // with any shared neighbour would then outrank every note without one,
+    // however irrelevant, and the semantically right answers would be pushed out
+    // of the returned pool entirely. Bounding the pool keeps the graph term doing
+    // what it does in the panel: reordering a relevant set, not replacing it.
+    const graphInfluence = Math.max(0, Math.min(1, this.options.graphInfluence));
+    if (graphInfluence > 0 && excludePath !== undefined && this.graph.hasGraph()) {
+      const pool = scored.slice(0, Math.min(scored.length, Math.max(limit * 4, 40)));
+      const ra = pool.map((s) => this.graph.evidence(excludePath, s.entry.path).ra);
+      if (ra.some((x) => x > 0)) {
+        const zSem = zNormaliser(pool.map((s) => s.semantic));
+        const zRa = zNormaliser(ra);
+        const fused = pool.map((s, i) => ({
+          s,
+          // Clamp the structural term so it can reorder within the pool but never
+          // single-handedly decide the order.
+          f: zSem(s.semantic) + graphInfluence * Math.max(-2, Math.min(2, zRa(ra[i]))),
+        }));
+        fused.sort((a, b) => b.f - a.f);
+        return this.takeFiles(fused.map((x) => x.s).concat(scored.slice(pool.length)), limit);
+      }
+    }
+    return this.takeFiles(scored, limit);
+  }
+
+  // Resolve scored entries to files, in order, up to `limit`. Entries whose file
+  // has since been deleted are skipped rather than shortening the result.
+  private takeFiles(
+    scored: { entry: IndexEntry; semantic: number }[],
+    limit: number,
+  ): { file: TFile; semantic: number }[] {
     const out: { file: TFile; semantic: number }[] = [];
     for (const { entry, semantic } of scored) {
       const file = this.app.vault.getAbstractFileByPath(entry.path);
@@ -2155,7 +2263,125 @@ export class IndexStore {
         }
       }
     }
+    this.subtractTemplateDirections(dims);
     this.dequant.setCentroid(centroid);
+  }
+
+  // TEMPLATE DE-CROWDING.
+  //
+  // Notes written from the same template are mutually similar for a reason that
+  // has nothing to do with their content: they share a skeleton. Measured on the
+  // lab vault, every daily note's top-10 was 9.9/10 OTHER daily notes — the
+  // template, not the day, was doing the ranking.
+  //
+  // Removing the boilerplate text before embedding barely helps (9.92 -> 9.0):
+  // what survives is not verbatim lines but the shared shape and register, which
+  // the model genuinely encodes. The fix has to happen in the vector space, not
+  // in the text: find the notes that share a skeleton, then subtract the ONE
+  // direction they all have in common. Measured 9.92 -> 0.67 with held-out link
+  // recall unchanged.
+  //
+  // Groups come from Obsidian's cached heading lists — notes sharing >= 2
+  // headings — so this costs no stored signature, no body re-read and no index
+  // format change. Groups smaller than MIN_TEMPLATE_GROUP are left alone: three
+  // notes sharing "## Notes" is a coincidence, not a template.
+  private subtractTemplateDirections(dims: number): void {
+    if (this.centeredMeans.size === 0) return;
+    const groups = this.templateGroups();
+    for (const members of groups) {
+      if (members.length < MIN_TEMPLATE_GROUP) continue;
+      const vectors: Float32Array[] = [];
+      for (const path of members) {
+        const v = this.centeredMeans.get(path);
+        if (v && v.length === dims) vectors.push(v);
+      }
+      if (vectors.length < MIN_TEMPLATE_GROUP) continue;
+      const shared = computeCentroid(vectors, dims);
+      if (!shared) continue;
+      for (const path of members) {
+        const v = this.centeredMeans.get(path);
+        if (!v || v.length !== dims) continue;
+        this.centeredMeans.set(path, centerVector(v, shared, dims));
+      }
+    }
+  }
+
+  // Connected components of "these two notes share at least 2 headings", over
+  // notes that have at least 2 headings at all. Union-find keyed by path.
+  private templateGroups(): string[][] {
+    const headings = new Map<string, Set<string>>();
+    for (const path of this.centeredMeans.keys()) {
+      const cache = this.app.metadataCache.getCache(path);
+      const hs = cache?.headings;
+      if (!hs || hs.length < 2) continue;
+      const set = new Set<string>();
+      for (const h of hs) {
+        const text = h.heading.trim().toLowerCase();
+        if (text) set.add(text);
+      }
+      if (set.size >= 2) headings.set(path, set);
+    }
+    if (headings.size < MIN_TEMPLATE_GROUP) return [];
+
+    const parent = new Map<string, string>();
+    const find = (x: string): string => {
+      let root = parent.get(x) ?? x;
+      while (root !== (parent.get(root) ?? root)) root = parent.get(root) ?? root;
+      let cur = x;
+      while (cur !== root) {
+        const next = parent.get(cur) ?? cur;
+        parent.set(cur, root);
+        cur = next;
+      }
+      return root;
+    };
+    const union = (a: string, b: string) => {
+      const ra = find(a), rb = find(b);
+      if (ra !== rb) parent.set(ra, rb);
+    };
+
+    // Bucket by heading so we only compare notes that share at least one, rather
+    // than every pair in the vault.
+    const byHeading = new Map<string, string[]>();
+    for (const [path, set] of headings) {
+      for (const h of set) {
+        let list = byHeading.get(h);
+        if (!list) { list = []; byHeading.set(h, list); }
+        list.push(path);
+      }
+    }
+    for (const list of byHeading.values()) {
+      // A heading shared by a huge number of notes ("## Notes") is not evidence of
+      // a template on its own, and pairing them all is quadratic. Skip it; the
+      // notes that really share a skeleton will also share a rarer heading.
+      if (list.length > TEMPLATE_HEADING_MAX_DF) continue;
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const a = headings.get(list[i]);
+          const b = headings.get(list[j]);
+          if (!a || !b) continue;
+          let shared = 0;
+          for (const h of a) if (b.has(h) && ++shared >= 2) break;
+          if (shared >= 2) union(list[i], list[j]);
+        }
+      }
+    }
+    const out = new Map<string, string[]>();
+    for (const path of headings.keys()) {
+      const root = find(path);
+      let list = out.get(root);
+      if (!list) { list = []; out.set(root, list); }
+      list.push(path);
+    }
+    // Single-linkage chains. "A shares 2 headings with B" and "B shares 2 with C"
+    // merges A and C even when they have nothing in common, so one note using
+    // both "## Summary" and "## Log" can fuse two unrelated template families.
+    // Simulated on 15k notes, real 500/300/200-note families collapsed into one
+    // 6.5k component that was 83% unrelated, and subtracting THAT centroid is
+    // subtracting a second global mean rather than a template direction. A
+    // component past this size is therefore not evidence of a template.
+    const ceiling = Math.max(MIN_TEMPLATE_GROUP * 10, Math.round(this.entries.size * 0.05));
+    return [...out.values()].filter((g) => g.length <= ceiling);
   }
 
   // The centered mean for a note — falls back to its raw mean when centering is off or
@@ -2258,6 +2484,37 @@ export class IndexStore {
     );
     const candidates = shortlist.slice(0, width);
 
+    // --- Stage 1b: structural nominations ------------------------------------
+    // The content shortlist can only contain notes the embedding already likes,
+    // so on its own it can NEVER surface the ~30% of real links whose target sits
+    // outside the source's content top-10. The graph nominates those: notes
+    // reachable through shared context, scored by Resource Allocation below.
+    // Measured: held-out link-recall@10 0.357 -> 0.651 (MiniLM), 0.664 -> 0.745
+    // (jina-v5-nano). Nominations are capped so a dense graph cannot swamp
+    // Stage 2, and they are skipped entirely when the user has turned the
+    // structural channel off or the vault has no links yet.
+    const graphInfluence = Math.max(0, Math.min(1, this.options.graphInfluence));
+    // Notes the GRAPH put on the shortlist, as opposed to ones the content
+    // channel already liked. Only these earn the relaxed similarity floor.
+    const nominated = new Set<string>();
+    if (graphInfluence > 0 && this.graph.hasGraph()) {
+      const already = new Set(candidates.map((c) => c.entry.path));
+      already.add(active.path);
+      const nominations = this.graph.candidates(
+        active.path,
+        Math.max(8, Math.round(width / 2)),
+      );
+      for (const nom of nominations) {
+        if (already.has(nom.path)) continue;
+        const entry = this.entries.get(nom.path);
+        if (!entry || entry.dims !== self.dims) continue;
+        if (!this.areaMatch(selfAreas, this.noteAreas(nom.path))) continue;
+        candidates.push({ entry, coarse: cosineSimilarity(selfMean, this.centeredMean(entry)) });
+        already.add(nom.path);
+        nominated.add(nom.path);
+      }
+    }
+
     // --- Stage 2: fine BiMax re-rank + structural boost ----------------------
     // The user-facing minSimilarity floor is applied HERE, against the final score
     // (BiMax + boost) — the metric actually shown on the card — so a related note
@@ -2266,7 +2523,15 @@ export class IndexStore {
     const minSim = this.options.minSimilarity;
     const bMax = Math.max(0, this.options.structureInfluence);
     const activeStruct = this.structuralContext(active);
-    const results: RankedNote[] = [];
+    const scored: {
+      note: RankedNote;
+      fused: number;
+      content: number;
+      display: number;
+      nominated: boolean;
+      ra: number;
+      shared: string[];
+    }[] = [];
 
     for (const { entry } of candidates) {
       const file = this.app.vault.getAbstractFileByPath(entry.path);
@@ -2292,21 +2557,68 @@ export class IndexStore {
       // signals.raw is already clamped to [0,1], so raw * bMax <= bMax; no extra cap.
       const boost = bMax > 0 ? signals.raw * bMax : 0;
       const finalScore = Math.min(1, semantic + boost);
+      const { ra, shared } = graphInfluence > 0
+        ? this.graph.evidence(active.path, entry.path)
+        : { ra: 0, shared: [] as string[] };
 
-      if (finalScore < minSim) continue;
-
-      results.push({
-        file,
-        score: finalScore,
-        approximate: false,
-        semantic,
-        reason: signals.reason,
-        connection: signals.directLink ? "linked" : "related",
+      scored.push({
+        note: {
+          file,
+          score: finalScore,
+          approximate: false,
+          semantic,
+          reason: signals.reason,
+          connection: signals.directLink ? "linked" : "related",
+        },
+        fused: 0,
+        // The CONTENT channel for fusion is the pre-boost semantic score. Using
+        // finalScore would feed the link/tag boost into z(content) and then add
+        // the graph term on top, counting structure twice, and its clamp at 1.0
+        // would tie the strongest matches so the graph term alone ordered them.
+        content: semantic,
+        display: finalScore,
+        nominated: nominated.has(entry.path),
+        ra,
+        shared,
       });
     }
 
-    results.sort((a, b) => b.score - a.score);
-    return results.slice(0, this.options.topK);
+    // --- Fusion --------------------------------------------------------------
+    // Rank by z(content) + influence * z(structure). Both channels are
+    // z-normalised ACROSS THIS CANDIDATE POOL so neither can dominate on scale
+    // alone, and a channel with no spread (e.g. a vault with no links) maps to 0
+    // and simply stops contributing. Only the ORDER is fused: `score` stays the
+    // semantic value the % pill has always shown, so the user-facing number and
+    // `minSimilarity` keep their meaning.
+    const zSem = zNormaliser(scored.map((s) => s.content));
+    const zRa = zNormaliser(scored.map((s) => s.ra));
+    for (const s of scored) {
+      s.fused = zSem(s.content) + graphInfluence * zRa(s.ra);
+    }
+
+    // A structurally-nominated note is allowed in below the similarity floor —
+    // its justification is the shared context, not the prose — but only when the
+    // graph evidence is real (a non-hub neighbour both notes link to) and the
+    // note is not semantically unrelated. Everything else obeys minSimilarity.
+    const relaxedFloor = minSim * STRUCTURAL_FLOOR_RATIO;
+    const kept = scored.filter((s) => {
+      // Only a note the GRAPH nominated may come in under the floor. Gating this
+      // on "has any shared neighbour" instead would quietly halve the user's
+      // similarity threshold for most of the content shortlist too.
+      const rescued = s.nominated && s.ra > 0 && s.shared.length > 0;
+      if (s.display < minSim && !(rescued && s.display >= relaxedFloor)) return false;
+      // Name the bridging note whenever the graph is the reason this card is
+      // here, not only when it also fell below the floor: a nomination that
+      // clears minSimilarity is the feature working best, and it would otherwise
+      // render as plain "Similar text". A direct link or shared tag is a better
+      // explanation than the bridge, so those keep their own reason.
+      if (rescued && s.note.reason?.kind !== "linked" && s.note.reason?.kind !== "shared-tags") {
+        s.note.reason = { kind: "graph", detail: basenameOf(s.shared[0]) };
+      }
+      return true;
+    });
+    kept.sort((a, b) => b.fused - a.fused);
+    return kept.slice(0, this.options.topK).map((s) => s.note);
   }
 
   // Normalized tag set for a note (frontmatter + inline), e.g. {"goa/character","personal"}.
@@ -2460,7 +2772,98 @@ export class IndexStore {
       nearDuplicates: dups.slice(0, DUP_N),
       suggestedLinks: suggested.slice(0, SUGGEST_N),
       suggestedTags: suggestedTags.slice(0, TAG_N),
+      surprising: this.surprisingConnections(ignore),
     };
+  }
+
+  // SURPRISING CONNECTIONS.
+  //
+  // Every discovery feature that ranks by similarity collapses to the obvious,
+  // because the most similar notes ARE the obvious ones — blind judges called
+  // 8 of 9 such finds "predictable from the titles alone". So this ranks by the
+  // structural channel and then FILTERS OUT anything the content channel already
+  // considers a neighbour. Non-obviousness is the gate, not an afterthought,
+  // which is why it cannot degrade into a list of siblings.
+  //
+  // A pair qualifies when: it is unlinked, each note is outside the other's
+  // content top-10, they share at least one non-hub neighbour, and they are not
+  // so semantically unrelated as to be noise (CONTENT_FLOOR — without it the list
+  // fills with pairs that merely both link to a popular note).
+  private surprisingConnections(ignore: Set<string>): VaultInsights["surprising"] {
+    const SURPRISE_N = 30;
+    // Below this the pair has no topical thread at all and reads as random.
+    const CONTENT_FLOOR = 0.05;
+    if (!this.graph.hasGraph()) return [];
+    const paths = [...this.entries.keys()].filter((p) => !ignore.has(p));
+    if (paths.length < 3) return [];
+
+    // Candidates first, similarities second. An earlier version precomputed the
+    // whole n x n similarity matrix and kept it in a Map of Maps; at 3k notes
+    // that is ~9M entries and ~470 MB, and it grows quadratically, while fewer
+    // than 0.1% of the cells were ever read. The graph proposes at most 20
+    // candidates per note, so collect those first and price only the pairs that
+    // actually reach the filters.
+    const pairs: { a: string; b: string }[] = [];
+    const seen = new Set<string>();
+    const needTopTen = new Set<string>();
+    for (const p of paths) {
+      const neighbours = this.graph.neighbours(p);
+      const selfAreas = this.noteAreas(p);
+      for (const cand of this.graph.candidates(p, 20)) {
+        const q = cand.path;
+        if (ignore.has(q) || q === p || neighbours.has(q)) continue;
+        // Isolated areas partition the vault everywhere else; they must here too,
+        // or an activated area leaks into the report through the link graph.
+        if (!this.areaMatch(selfAreas, this.noteAreas(q))) continue;
+        const key = p < q ? `${p} ${q}` : `${q} ${p}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        pairs.push({ a: p, b: q });
+        needTopTen.add(p);
+        needTopTen.add(q);
+      }
+    }
+    if (pairs.length === 0) return [];
+
+    // Content top-10, computed ONLY for notes that appear in a candidate pair,
+    // and kept as a bounded 10-element selection rather than a sorted full row.
+    const topTen = new Map<string, Set<string>>();
+    for (const p of needTopTen) {
+      const a = this.entries.get(p);
+      if (!a) continue;
+      const va = this.centeredMean(a);
+      const best: { path: string; sim: number }[] = [];
+      for (const q of paths) {
+        if (q === p) continue;
+        const b = this.entries.get(q);
+        if (!b || b.dims !== a.dims) continue;
+        const sim = cosineSimilarity(va, this.centeredMean(b));
+        if (best.length < 10) {
+          best.push({ path: q, sim });
+          if (best.length === 10) best.sort((x, y) => x.sim - y.sim);
+        } else if (sim > best[0].sim) {
+          best[0] = { path: q, sim };
+          best.sort((x, y) => x.sim - y.sim);
+        }
+      }
+      topTen.set(p, new Set(best.map((x) => x.path)));
+    }
+
+    const out: VaultInsights["surprising"] = [];
+    for (const { a: p, b: q } of pairs) {
+      // Must be non-obvious in BOTH directions — a pair that is obvious from
+      // one side is just an asymmetric similarity hit.
+      if (topTen.get(p)?.has(q) || topTen.get(q)?.has(p)) continue;
+      const ea = this.entries.get(p), eb = this.entries.get(q);
+      if (!ea || !eb || ea.dims !== eb.dims) continue;
+      const sim = cosineSimilarity(this.centeredMean(ea), this.centeredMean(eb));
+      if (sim < CONTENT_FLOOR) continue;
+      const { shared, ra } = this.graph.evidence(p, q);
+      if (ra <= 0 || shared.length === 0) continue;
+      out.push({ a: p, b: q, via: shared.slice(0, 3).map(basenameOf), score: ra });
+    }
+    out.sort((x, y) => y.score - x.score);
+    return out.slice(0, SURPRISE_N);
   }
 
   // Confidence in a note's semantic score, from how much BODY text it carries (see

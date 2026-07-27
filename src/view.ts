@@ -459,6 +459,11 @@ export class RelatedNotesView extends ItemView {
         return "Co-cited";
       case "semantic":
         return "Similar text";
+      // Surfaced by the link graph rather than by the prose: name the note that
+      // bridges the two, because the similarity score alone would not explain
+      // why this card is here.
+      case "graph":
+        return reason.detail ? `via ${reason.detail}` : "Shared context";
       default:
         return "";
     }

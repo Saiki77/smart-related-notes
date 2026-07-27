@@ -45,6 +45,7 @@ import {
   type VaultInsights,
 } from "./index-store";
 import { RelatedNotesView, VIEW_TYPE_RELATED } from "./view";
+import { VaultMapView, VIEW_TYPE_MAP } from "./map-view";
 import { TitleIndex } from "./title-index";
 import {
   glowPlugin,
@@ -96,6 +97,7 @@ export interface RelatedNotesSettings {
   headingContext: boolean; // prefix each section's first chunk with a heading breadcrumb
   ideaInfluence: number; // 0..0.6 rank-time blend of idea-level similarity (0 = off; live, no re-embed)
   isolatedAreas: string; // activated tag namespaces (comma/newline) that form self-contained areas
+  graphInfluence: number; // 0..1 weight of the link-graph channel in the fused rank (0 = content only)
   // --- linking (Features A + B) ---
   glowEnabled: boolean; // inline glow + 1-click link (Feature A)
   glowRestrictToLivePreview: boolean; // only decorate live preview
@@ -138,6 +140,7 @@ export const DEFAULT_SETTINGS: RelatedNotesSettings = {
   headingContext: true,
   ideaInfluence: 0.3,
   isolatedAreas: "",
+  graphInfluence: 1,
   // Precision-first, low-risk behaviors ON; riskier ones OFF. suggesterTakeOver's
   // effective default is computed against easy-links at layout-ready (see
   // resolveSuggesterTakeOver) so we don't fight it; the stored value is the
@@ -321,6 +324,7 @@ export default class RelatedNotesPlugin extends Plugin {
     this.titleIndex = new TitleIndex(this.app, () => this.linkExcludedFolders());
 
     this.registerView(VIEW_TYPE_RELATED, (leaf) => new RelatedNotesView(leaf, this));
+    this.registerView(VIEW_TYPE_MAP, (leaf) => new VaultMapView(leaf, this));
 
     this.addRibbonIcon("sparkles", "Smart related notes", () => {
       void this.activateView();
@@ -339,6 +343,14 @@ export default class RelatedNotesPlugin extends Plugin {
       name: "Rebuild the index",
       callback: () => {
         void this.rebuildIndex();
+      },
+    });
+
+    this.addCommand({
+      id: "open-map",
+      name: "Open the vault map",
+      callback: () => {
+        void this.activateMap();
       },
     });
 
@@ -463,6 +475,18 @@ export default class RelatedNotesPlugin extends Plugin {
         this.titleIndex.markDirty();
         this.suggester?.invalidateAliasCache(file.path);
         this.debouncedTitleRefresh();
+        // Editing a note can add or remove wikilinks, which changes the structural
+        // channel's adjacency. Rebuilding it is a single pass over resolvedLinks
+        // with no model work, so invalidating eagerly is cheaper than tracking
+        // which links actually moved.
+        this.store.invalidateGraph();
+      }),
+    );
+    // resolvedLinks is only authoritative once Obsidian has resolved the whole
+    // vault; before that the structural channel would see a partial graph.
+    this.registerEvent(
+      this.app.metadataCache.on("resolved", () => {
+        this.store.invalidateGraph();
       }),
     );
 
@@ -654,7 +678,7 @@ export default class RelatedNotesPlugin extends Plugin {
     }
     await this.app.workspace.getLeaf(false).openFile(file);
     new Notice(
-      `Vault insights: ${insights.suggestedLinks.length} link suggestions, ${insights.orphans.length} orphans.`,
+      `Vault insights: ${insights.suggestedLinks.length} link suggestions, ${insights.surprising.length} surprising connections, ${insights.orphans.length} orphans.`,
     );
   }
 
@@ -678,6 +702,19 @@ export default class RelatedNotesPlugin extends Plugin {
     if (ins.suggestedLinks.length === 0) L.push("None above threshold.");
     for (const s of ins.suggestedLinks) {
       L.push(`- ${wl(s.from)} and ${wl(s.to)}  (${pct(s.score)})`);
+    }
+    L.push("");
+
+    L.push(`## Surprising connections (${ins.surprising.length})`, "");
+    L.push(
+      "Notes your links connect through shared context, but whose wording is too different for similarity to ever pair them. Each shows the note that bridges the two.",
+      "",
+    );
+    if (ins.surprising.length === 0) {
+      L.push("None yet. This grows as you link more notes together.");
+    }
+    for (const s of ins.surprising) {
+      L.push(`- ${wl(s.a)} and ${wl(s.b)}  (via ${s.via.join(", ")})`);
     }
     L.push("");
 
@@ -961,6 +998,21 @@ export default class RelatedNotesPlugin extends Plugin {
     await workspace.revealLeaf(leaf);
   }
 
+  // The map wants room, so it opens as a main-area tab rather than in the
+  // sidebar. Reopening focuses the existing tab and redraws it, since the index
+  // may have moved on since it was last built.
+  async activateMap(): Promise<void> {
+    const { workspace } = this.app;
+    let leaf: WorkspaceLeaf | null = workspace.getLeavesOfType(VIEW_TYPE_MAP)[0] ?? null;
+    if (!leaf) {
+      leaf = workspace.getLeaf(true);
+      await leaf.setViewState({ type: VIEW_TYPE_MAP, active: true });
+    } else if (leaf.view instanceof VaultMapView) {
+      leaf.view.rebuild();
+    }
+    await workspace.revealLeaf(leaf);
+  }
+
   // --- snippet ---------------------------------------------------------------
   // The 1–2 line muted preview shown on each card. A synchronous read of file
   // content isn't possible here, so we cache by mtime and kick off an async read
@@ -1007,6 +1059,7 @@ export default class RelatedNotesPlugin extends Plugin {
       headingContext: this.settings.headingContext,
       ideaInfluence: this.settings.ideaInfluence,
       isolatedAreas: this.parseIsolatedAreas(),
+      graphInfluence: this.settings.graphInfluence,
     };
   }
 
@@ -1650,6 +1703,20 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         fmt: (v) => v.toFixed(2),
       },
       (v) => (this.plugin.settings.ideaInfluence = v),
+    );
+
+    this.slider(
+      host,
+      "Link-graph influence",
+      "Also rank by how your links connect notes, not just by what they say. Surfaces related notes the wording alone would miss. 0 disables it.",
+      {
+        min: 0,
+        max: 1,
+        step: 0.1,
+        value: this.plugin.settings.graphInfluence,
+        fmt: (v) => v.toFixed(1),
+      },
+      (v) => (this.plugin.settings.graphInfluence = v),
     );
 
     this.slider(

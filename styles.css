@@ -369,3 +369,113 @@
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------------------------------------------------------------- vault map */
+.rn-map-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding: var(--size-4-4);
+  overflow: auto;
+}
+
+.rn-map-header {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+}
+
+.rn-map-title {
+  font-size: var(--font-ui-large);
+  font-weight: var(--font-semibold);
+}
+
+.rn-map-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--size-2-2);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.rn-map-refresh:hover {
+  color: var(--text-normal);
+}
+
+.rn-map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-2-2);
+}
+
+.rn-map-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  padding: var(--size-2-1) var(--size-2-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-l);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.rn-map-chip:hover {
+  border-color: var(--background-modifier-border-hover);
+  color: var(--text-normal);
+}
+
+/* A hidden cluster stays legible: dimmed and struck through, never invisible,
+   so it is obvious the filter is on rather than that notes have vanished. */
+.rn-map-chip.is-off {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.rn-map-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.rn-map-svg {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary-alt);
+}
+
+.rn-map-dot {
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 80ms ease, r 80ms ease;
+}
+
+.rn-map-dot:hover {
+  opacity: 1;
+  r: 7;
+}
+
+/* The halo is what keeps a label readable where it overlaps its own points. */
+.rn-map-label {
+  fill: var(--text-normal);
+  font-size: 15px;
+  font-weight: var(--font-semibold);
+  paint-order: stroke;
+  stroke: var(--background-primary-alt);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.rn-map-empty,
+.rn-map-foot {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
