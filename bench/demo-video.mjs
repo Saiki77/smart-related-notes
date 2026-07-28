@@ -30,15 +30,15 @@ mkdirSync(OUT, { recursive: true });
 
 const W = 1200, H = 620, FPS = 25;
 const XF = 0.7;        // crossfade length, seconds
-const BLUR = 8;        // peak blur during a cut, px
+const BLUR = 9;        // peak blur during a cut, px
 
 const C = {
-  page: "#111116", bg: "#191920", edge: "#2e2e38",
-  card: "#15151b", cardEdge: "#2a2a34",
-  inner: "#1e1e27", innerEdge: "#3a3a48",
-  ink: "#ededf2", body: "#c8cbd6", mut: "#8a8f9e", dim: "#6b7080", faint: "#3a3a48",
-  green: "#4fc98a", recFill: "#1c2620", recEdge: "#3f6b52", recInk: "#8ee8ba",
-  peri: "#8a93c8", gold: "#e6c074", cyan: "#52c8d0", grey: "#a7a7b4", rose: "#9a7f8b",
+  page: "#08080c", bg: "#16161d", edge: "#3d3d4c",
+  card: "#20202a", cardEdge: "#3d3d4c",
+  inner: "#2b2b38", innerEdge: "#505062",
+  ink: "#ffffff", body: "#e6e9f0", mut: "#b0b7c6", dim: "#8d95a6", faint: "#565669",
+  green: "#5fe3a3", recFill: "#183328", recEdge: "#4f9c74", recInk: "#9df3c6",
+  peri: "#a6b0f5", gold: "#f7d68a", cyan: "#6fe0ea", grey: "#c3c7d4", rose: "#e09aab",
 };
 const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
 
@@ -82,14 +82,14 @@ function says(t, beats) {
     const b = beats[i], next = beats[i + 1];
     const op = hold(t, b.at, next ? next.at : null, 0.4);
     if (op <= 0.004) continue;
-    s += T(W / 2, 40, b.head, { size: 25, weight: 600, anchor: "middle", ls: -0.3, op });
-    if (b.sub) s += T(W / 2, 63, b.sub, { fill: C.dim, size: 13.5, anchor: "middle", op: op * 0.92 });
+    s += T(W / 2, 40, b.head, { size: 31, weight: 600, anchor: "middle", ls: -0.4, op });
+    if (b.sub) s += T(W / 2, 66, b.sub, { fill: C.mut, size: 16.5, anchor: "middle", op: op * 0.92 });
   }
   return s;
 }
 
 // ------------------------------------------------------------------ the window
-const WIN = { x: 40, y: 84, w: 1120, h: 486, ribbon: 44, tree: 158, panel: 316 };
+const WIN = { x: 40, y: 84, w: 1120, h: 486, ribbon: 46, tree: 146, panel: 352 };
 WIN.ed = { x: WIN.x + WIN.ribbon + WIN.tree };
 WIN.ed.w = WIN.w - WIN.ribbon - WIN.tree - WIN.panel;
 WIN.pn = { x: WIN.x + WIN.w - WIN.panel, w: WIN.panel };
@@ -103,7 +103,7 @@ function windowChrome(o = {}) {
   let s = R(WIN.x, WIN.y, WIN.w, WIN.h, { fill: C.bg, stroke: C.edge, r: 12, op });
   s += LINE(WIN.x, WIN.y + 38, WIN.x + WIN.w, WIN.y + 38, C.edge, op);
   for (let i = 0; i < 3; i++) s += DOT(WIN.x + 20 + i * 17, WIN.y + 19, 5, [C.rose, C.gold, C.green][i], op * 0.85);
-  s += T(WIN.x + WIN.w / 2, WIN.y + 24, title, { fill: C.mut, size: 12.5, anchor: "middle", op: op * 0.9 });
+  s += T(WIN.x + WIN.w / 2, WIN.y + 24, title, { fill: C.mut, size: 14, anchor: "middle", op: op * 0.9 });
   s += LINE(WIN.x + WIN.ribbon, WIN.y + 38, WIN.x + WIN.ribbon, WIN.y + WIN.h, C.edge, op);
   for (let i = 0; i < 6; i++)
     s += R(WIN.x + 13, WIN.y + 58 + i * 32, 18, 18, { fill: i === 3 ? C.peri : C.faint, r: 5, op: op * (i === 3 ? 0.95 : 0.5) });
@@ -118,7 +118,7 @@ function windowChrome(o = {}) {
       for (let i = 0; i < LONGTREE.length; i++) {
         const y = WIN.y + 56 + i * rowH - off + pass * span;
         if (y < WIN.y + 42 || y > WIN.y + WIN.h - 4) continue;
-        s += T(WIN.x + WIN.ribbon + 22, y, LONGTREE[i], { fill: C.dim, size: 11.5, op: op * 0.8 });
+        s += T(WIN.x + WIN.ribbon + 22, y, LONGTREE[i], { fill: C.dim, size: 13, op: op * 0.9 });
       }
     }
     s += `</g>`;
@@ -127,7 +127,7 @@ function windowChrome(o = {}) {
       const folder = [0, 4, 7].includes(i), y = WIN.y + 62 + i * 25;
       if (i === activeTree) s += R(WIN.x + WIN.ribbon + 8, y - 13, WIN.tree - 16, 22, { fill: C.inner, r: 5, op: op * 0.9 });
       s += T(WIN.x + WIN.ribbon + (folder ? 16 : 26), y + 3, TREE[i], {
-        fill: folder ? C.mut : i === activeTree ? C.body : C.dim, size: 11.5, weight: folder ? 600 : 400, op: op * 0.95,
+        fill: folder ? C.mut : i === activeTree ? C.body : C.dim, size: 13, weight: folder ? 600 : 400, op: op * 0.95,
       });
     }
   }
@@ -136,7 +136,7 @@ function windowChrome(o = {}) {
 function editorBody(o = {}) {
   const { reveal = 1, dim = 1, op = 1, link = 0, caret = -1 } = o;
   const x = WIN.ed.x + 34;
-  let s = T(x, WIN.y + 84, "Backprop als Feedback", { size: 21, weight: 600, op: op * dim });
+  let s = T(x, WIN.y + 84, "Backprop als Feedback", { size: 25, weight: 600, op: op * dim });
   let y = WIN.y + 118;
   for (let i = 0; i < BODY.length; i++) {
     if (BODY[i] === 0) { y += 14; continue; }
@@ -155,8 +155,8 @@ function editorBody(o = {}) {
 }
 function panelShell(op = 1, sub = "Based on Backprop als Feedback") {
   return LINE(WIN.pn.x, WIN.y + 38, WIN.pn.x, WIN.y + WIN.h, C.edge, op)
-    + T(WIN.pn.x + 20, WIN.y + 68, "Smart related notes", { size: 13.5, weight: 600, op })
-    + T(WIN.pn.x + 20, WIN.y + 86, sub, { fill: C.dim, size: 11, op: op * 0.9 });
+    + T(WIN.pn.x + 20, WIN.y + 68, "Smart related notes", { size: 15.5, weight: 600, op })
+    + T(WIN.pn.x + 20, WIN.y + 86, sub, { fill: C.mut, size: 12.5, op: op * 0.9 });
 }
 const CARDS = [
   { t: "Backpropagation", pct: 49, pill: ["Linked", "rec"] },
@@ -164,22 +164,22 @@ const CARDS = [
   { t: "Machine Learning MOC", pct: 32, pill: ["via Backpropagation", "rec"] },
   { t: "Recurrent Neural Network", pct: 16, pill: ["via Backpropagation", "rec"] },
 ];
-const pillW = (s) => Math.round(s.length * 6.9) + 20;
+const pillW = (s) => Math.round(s.length * 7.6) + 22;
 function pill(x, y, label, kind, op) {
   const w = pillW(label);
   const st = kind === "rec" ? [C.recFill, C.recEdge, C.recInk] : [C.inner, C.innerEdge, C.mut];
-  return R(x, y, w, 19, { fill: st[0], stroke: st[1], r: 6, op }) + T(x + w / 2, y + 13.5, label, { fill: st[2], size: 11, anchor: "middle", op });
+  return R(x, y, w, 19, { fill: st[0], stroke: st[1], r: 6, op }) + T(x + w / 2, y + 13.5, label, { fill: st[2], size: 12.5, anchor: "middle", op });
 }
 function card(i, k, op = 1, hi = 0) {
   if (k <= 0.004) return "";
   const c = CARDS[i];
-  const y = WIN.y + 104 + i * 74 + (1 - k) * 14;
+  const y = WIN.y + 106 + i * 78 + (1 - k) * 14;
   const x = WIN.pn.x + 14, w = WIN.pn.w - 28;
-  let s = R(x, y, w, 62, { fill: C.inner, stroke: hi > 0.01 ? C.recEdge : C.innerEdge, r: 9, op, sw: 1 + hi * 0.8 });
+  let s = R(x, y, w, 66, { fill: C.inner, stroke: hi > 0.01 ? C.recEdge : C.innerEdge, r: 9, op, sw: 1 + hi * 0.8 });
   if (hi > 0.01) s += RING(x + w / 2, y + 31, 0, C.recEdge, 0);
-  s += T(x + 16, y + 24, c.t, { fill: C.body, size: 13.5, weight: 500, op });
+  s += T(x + 16, y + 24, c.t, { fill: C.body, size: 15, weight: 500, op });
   s += R(x + w - 56, y + 11, 42, 20, { fill: c.pct >= 30 ? C.peri : C.innerEdge, r: 10, op });
-  s += T(x + w - 35, y + 25, `${c.pct}%`, { fill: "#15151b", size: 11.5, weight: 600, anchor: "middle", op });
+  s += T(x + w - 35, y + 25, `${c.pct}%`, { fill: "#0d0d12", size: 13, weight: 700, anchor: "middle", op });
   s += pill(x + 16, y + 34, c.pill[0], c.pill[1], op);
   return s;
 }
@@ -210,7 +210,7 @@ function sSearch(t) {
   const typed = q.slice(0, Math.floor(cl((t - 0.5) / 1.1) * q.length));
   s += R(bx, 130, bw, 52, { fill: C.card, stroke: C.cardEdge, r: 26, op: hold(t, 0.2, null, 0.4) });
   s += `<g opacity="${hold(t, 0.2, null, 0.4).toFixed(3)}"><circle cx="${bx + 32}" cy="156" r="8" fill="none" stroke="${C.dim}" stroke-width="2"/><line x1="${bx + 38}" y1="162" x2="${bx + 45}" y2="169" stroke="${C.dim}" stroke-width="2"/></g>`;
-  s += T(bx + 58, 162, typed || "search…", { fill: typed ? C.body : C.dim, size: 17, op: hold(t, 0.2, null, 0.4) });
+  s += T(bx + 58, 162, typed || "search…", { fill: typed ? C.body : C.dim, size: 20, op: hold(t, 0.2, null, 0.4) });
   if (t > 0.5 && t < 1.8 && Math.floor(t * 3) % 2 === 0) s += R(bx + 60 + typed.length * 8.6, 146, 2, 20, { fill: C.ink, r: 1 });
 
   // the note you would have wanted, which shares no words with the query
@@ -218,8 +218,8 @@ function sSearch(t) {
   const noteCard = (x, title, lines, tone, k) => {
     if (k <= 0.004) return "";
     let o = R(x, 240, 380, 190, { fill: C.card, stroke: C.cardEdge, r: 12, op: k });
-    o += T(x + 24, 274, title, { fill: C.body, size: 15, weight: 600, op: k });
-    for (let i = 0; i < lines.length; i++) o += T(x + 24, 306 + i * 26, lines[i], { fill: i === 0 ? tone : C.dim, size: 13.5, op: k });
+    o += T(x + 24, 274, title, { fill: C.body, size: 17, weight: 600, op: k });
+    for (let i = 0; i < lines.length; i++) o += T(x + 24, 306 + i * 26, lines[i], { fill: i === 0 ? tone : C.mut, size: 15.5, op: k });
     return o;
   };
   const hit = hold(t, 1.9, null, 0.5);
@@ -230,7 +230,7 @@ function sSearch(t) {
     s += LINE(530, 335, 670, 335, C.innerEdge, xk * 0.8, 1.6, "6 6");
     s += LINE(590, 325, 610, 345, C.rose, xk, 2.4);
     s += LINE(610, 325, 590, 345, C.rose, xk, 2.4);
-    s += T(600, 470, "Not one word in common. Search will never join these.", { fill: C.mut, size: 14, anchor: "middle", op: xk });
+    s += T(600, 470, "Not one word in common. Search will never join these.", { fill: C.body, size: 16.5, anchor: "middle", op: xk });
   }
   return s;
 }
@@ -251,15 +251,15 @@ function sIdea(t, map) {
 
   const noteCard = (p, title, lang, k) => k <= 0.004 ? "" :
     R(p.x - 115, p.y - 48, 230, 96, { fill: C.inner, stroke: C.innerEdge, r: 10, op: k })
-    + T(p.x - 97, p.y - 20, title, { fill: C.body, size: 13.5, weight: 600, op: k })
-    + T(p.x - 97, p.y, lang, { fill: C.dim, size: 11, op: k });
+    + T(p.x - 97, p.y - 20, title, { fill: C.body, size: 15.5, weight: 600, op: k })
+    + T(p.x - 97, p.y, lang, { fill: C.mut, size: 12.5, op: k });
   s += noteCard(note, "Backprop als Feedback", "written in English", hold(t, 0.15, null, 0.4));
   s += noteCard({ x: note.x, y: note.y + 190 }, "2026-02-07", "written in German", hold(t, 6.2, null, 0.4));
 
   const mk = hold(t, 0.35, null, 0.4);
   s += R(model.x - 66, model.y - 34, 132, 68, { fill: C.inner, stroke: C.peri, r: 12, op: mk });
-  s += T(model.x, model.y - 4, "embedding model", { fill: C.peri, size: 12, weight: 600, anchor: "middle", op: mk * (0.62 + 0.38 * Math.abs(Math.sin(t * 4))) });
-  s += T(model.x, model.y + 16, "runs on your Mac", { fill: C.dim, size: 10, anchor: "middle", op: mk * 0.9 });
+  s += T(model.x, model.y - 4, "embedding model", { fill: C.peri, size: 13.5, weight: 600, anchor: "middle", op: mk * (0.62 + 0.38 * Math.abs(Math.sin(t * 4))) });
+  s += T(model.x, model.y + 16, "runs on your Mac", { fill: C.mut, size: 11.5, anchor: "middle", op: mk * 0.9 });
 
   const pA = { x: F.x + F.w * 0.42, y: F.y + F.h * 0.38 };
   const pB = { x: F.x + F.w * 0.50, y: F.y + F.h * 0.46 };
@@ -272,7 +272,7 @@ function sIdea(t, map) {
       const p = qbez(f, { x: (f.x + model.x) / 2, y: f.y - 76 }, model, k);
       const w = pillW(words[i]);
       out += R(p.x - w / 2, p.y - 10, w, 20, { fill: C.inner, stroke: tone, r: 6, op: 1 - k * k })
-        + T(p.x, p.y + 4, words[i], { fill: tone, size: 11.5, anchor: "middle", op: 1 - k * k });
+        + T(p.x, p.y + 4, words[i], { fill: tone, size: 13, anchor: "middle", op: 1 - k * k });
     }
     return out;
   };
@@ -302,7 +302,7 @@ function sIdea(t, map) {
   const nk = hold(t, 8.9, null, 0.45);
   if (nk > 0.004) {
     s += LINE(pA.x, pA.y, pB.x, pB.y, C.green, nk * 0.95, 2.4);
-    s += T((pA.x + pB.x) / 2, (pA.y + pB.y) / 2 + 46, "different words, one place", { fill: C.recInk, size: 13.5, anchor: "middle", op: nk });
+    s += T((pA.x + pB.x) / 2, (pA.y + pB.y) / 2 + 46, "different words, one place", { fill: C.recInk, size: 15.5, anchor: "middle", op: nk });
   }
   return s;
 }
@@ -319,8 +319,8 @@ function sSidebar(t) {
   for (let i = 0; i < CARDS.length; i++) s += card(i, ease((t - 0.5 - i * 0.28) / 0.6));
   const hi = hold(t, 3.8, null, 0.4);
   if (hi > 0.004) {
-    const y = WIN.y + 104 + 3 * 74, x = WIN.pn.x + 14, w = WIN.pn.w - 28;
-    s += R(x - 3, y - 3, w + 6, 68, { fill: "none", stroke: C.recEdge, r: 11, op: hi, sw: 2 });
+    const y = WIN.y + 106 + 3 * 78, x = WIN.pn.x + 14, w = WIN.pn.w - 28;
+    s += R(x - 3, y - 3, w + 6, 72, { fill: "none", stroke: C.recEdge, r: 11, op: hi, sw: 2 });
   }
   return s;
 }
@@ -337,8 +337,8 @@ function sLimit(t) {
     if (k <= 0.004) return "";
     const w = 218, h = 64, r = back(k);
     return R(p.x - w / 2 * r, p.y - h / 2 * r, w * r, h * r, { fill: C.inner, stroke: tone, r: 11, op: k })
-      + T(p.x, p.y - 2, label, { fill: C.body, size: 15, weight: 600, anchor: "middle", op: k })
-      + T(p.x, p.y + 19, sub, { fill: C.dim, size: 11, anchor: "middle", op: k });
+      + T(p.x, p.y - 2, label, { fill: C.body, size: 17, weight: 600, anchor: "middle", op: k })
+      + T(p.x, p.y + 19, sub, { fill: C.mut, size: 12.5, anchor: "middle", op: k });
   };
   s += node(A, "Entropy", "information theory", hold(t, 0.5, null, 0.45), C.innerEdge);
   s += node(B, "Hash Table", "data structures", hold(t, 0.75, null, 0.45), C.innerEdge);
@@ -348,7 +348,7 @@ function sLimit(t) {
     const mx = (A.x + B.x) / 2;
     s += LINE(mx - 11, A.y - 11, mx + 11, A.y + 11, C.rose, xk, 2.4);
     s += LINE(mx + 11, A.y - 11, mx - 11, A.y + 11, C.rose, xk, 2.4);
-    s += T(mx, A.y - 32, "no words in common", { fill: C.dim, size: 12.5, anchor: "middle", op: xk });
+    s += T(mx, A.y - 32, "no words in common", { fill: C.mut, size: 14.5, anchor: "middle", op: xk });
   }
   s += node(M, "Hash Function", "you linked both of these", hold(t, 5.8, null, 0.45), C.recEdge);
   const ek = ease((t - 6.2) / 0.7);
@@ -359,9 +359,9 @@ function sLimit(t) {
   const rk = hold(t, 7.0, null, 0.45);
   if (rk > 0.004) {
     s += LINE(A.x, A.y - 52, B.x, B.y - 52, C.recInk, rk * 0.85, 2.4);
-    s += T((A.x + B.x) / 2, A.y - 64, "so 3.0 counts them as related", { fill: C.recInk, size: 14, anchor: "middle", op: rk });
+    s += T((A.x + B.x) / 2, A.y - 64, "so 3.0 counts them as related", { fill: C.recInk, size: 16, anchor: "middle", op: rk });
     s += T(W / 2, 566, "A third of the links you make point where wording cannot look.  Held-out link recall 0.66 → 0.75.", {
-      fill: C.mut, size: 13.5, anchor: "middle", op: rk,
+      fill: C.body, size: 15.5, anchor: "middle", op: rk,
     });
   }
   return s;
@@ -412,9 +412,9 @@ function sMap(t, map) {
   for (let li = 0; li < map.legend.length; li++) {
     const l = map.legend[li], k = hold(t, 2.9 + li * 0.34, null, 0.4);
     s += DOT(WIN.pn.x + 26, ly - 4, 4.5, COL[l.k % 6], k);
-    s += T(WIN.pn.x + 40, ly, l.name, { fill: C.body, size: 12.5, op: k });
-    s += T(WIN.pn.x + 40, ly + 15, `${l.n} notes`, { fill: C.dim, size: 10.5, op: k });
-    ly += 38;
+    s += T(WIN.pn.x + 40, ly, l.name, { fill: C.body, size: 14.5, op: k });
+    s += T(WIN.pn.x + 40, ly + 15, `${l.n} notes`, { fill: C.mut, size: 12, op: k });
+    ly += 42;
   }
   return s;
 }
@@ -422,12 +422,12 @@ function sMap(t, map) {
 // ==================================================================== 8. close
 function sClose(t) {
   const a = hold(t, 0.15, null, 0.5);
-  let s = T(W / 2 - 34, 258, "Smart Related Notes", { size: 44, weight: 600, anchor: "middle", ls: -1, op: a });
-  s += T(W / 2 + 244, 258, "3.0", { size: 44, weight: 600, anchor: "middle", fill: C.green, op: a });
-  s += T(W / 2, 300, "Community plugins  ›  Browse  ›  Smart Related Notes", { fill: C.mut, size: 16, anchor: "middle", op: hold(t, 0.7, null, 0.45) });
+  let s = T(W / 2 - 34, 258, "Smart Related Notes", { size: 50, weight: 600, anchor: "middle", ls: -1.2, op: a });
+  s += T(W / 2 + 278, 258, "3.0", { size: 50, weight: 600, anchor: "middle", fill: C.green, op: a });
+  s += T(W / 2, 300, "Community plugins  ›  Browse  ›  Smart Related Notes", { fill: C.body, size: 18.5, anchor: "middle", op: hold(t, 0.7, null, 0.45) });
   const c = hold(t, 1.2, null, 0.45);
-  s += R(W / 2 - 200, 330, 400, 42, { fill: C.recFill, stroke: C.recEdge, r: 10, op: c });
-  s += T(W / 2, 357, "Local, offline, and measured before it ships", { fill: C.recInk, size: 14.5, anchor: "middle", op: c });
+  s += R(W / 2 - 230, 330, 460, 46, { fill: C.recFill, stroke: C.recEdge, r: 10, op: c });
+  s += T(W / 2, 360, "Local, offline, and measured before it ships", { fill: C.recInk, size: 16.5, anchor: "middle", op: c });
   return s;
 }
 
