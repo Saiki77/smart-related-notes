@@ -20,7 +20,13 @@ import { join, relative } from "node:path";
 import { fisherYates } from "./shuffle.mjs";
 
 const VAULT = process.env.LAB_VAULT || "/Users/justus/obsidian_atomized_intermediary/lab/vault";
-const OUT = "/Users/justus/obsidian_atomized_intermediary/lab/results/v4-channels.json";
+// Seed is settable so the study can be run across seeds and reported as mean +- SD.
+// A single seed is not a baseline: seed-to-seed SD here is around 0.02, wider than
+// several of the effects this harness is used to judge. Declared here because OUT
+// below reads it.
+const SEED = Number(process.env.SEED ?? 20260727);
+const OUT_BASE = "/Users/justus/obsidian_atomized_intermediary/lab/results/v4-channels.json";
+const OUT = process.env.SEED ? OUT_BASE.replace(/\.json$/, `-${SEED}.json`) : OUT_BASE;
 const MODEL = process.env.LAB_MODEL || "jinaai/jina-embeddings-v5-text-nano-text-matching";
 const CACHE = join(process.env.HOME, ".cache/srn-lab", `v3-${MODEL.replace(/[^a-z0-9]/gi, "_")}.json`);
 
@@ -70,7 +76,7 @@ for (let s = 0; s < N; s++) {
   }
 }
 const edges = [...uniq].map((k) => k.split("-").map(Number));
-const rnd = mulberry32(20260727);
+const rnd = mulberry32(SEED);
 const shuffled = fisherYates(edges, rnd);
 const nHold = Math.floor(shuffled.length * 0.2);
 const heldOut = shuffled.slice(0, nHold), train = shuffled.slice(nHold);
@@ -205,5 +211,5 @@ for (const r of rows) console.log(`  ${r.config.padEnd(28)} ${r.recall.toFixed(4
 console.log(`\n  channel rank correlation (lower = more independent = more worth fusing)`);
 for (const [k, v] of Object.entries(corr)) console.log(`    ${k.padEnd(22)} ${v}`);
 mkdirSync("/Users/justus/obsidian_atomized_intermediary/lab/results", { recursive: true });
-writeFileSync(OUT, JSON.stringify({ model: MODEL, notes: N, heldOut: heldOut.length, rows, corr }, null, 1));
+writeFileSync(OUT, JSON.stringify({ model: MODEL, seed: SEED, notes: N, heldOut: heldOut.length, rows, corr }, null, 1));
 console.log("\nwrote", OUT);
