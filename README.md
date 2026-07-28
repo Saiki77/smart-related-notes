@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/demo.gif" alt="Smart Related Notes in 25 seconds: the panel ranking a note's neighbours by meaning; two notes with no wording in common connected through a note you linked to both, the card saying via that note, held-out link recall 0.75 from 0.66; daily notes going from crowding 8.2 of 10 to 3.4; and a map of the whole vault clustered and named automatically" width="880">
+  <img src="docs/demo.gif" alt="Smart Related Notes in 47 seconds: you wrote something relevant months ago and will not find it by scrolling 494 notes; search needs the words you happened to use, and the note that matters used different ones, in a different language; so every note is placed by meaning instead, and the two land as neighbours; the sidebar answers without being asked; meaning alone misses two notes with no wording in common that you linked to a shared third, which lifts held-out link recall from 0.66 to 0.75; every card names why it is there; and the same points, stepped back from, are a map of the vault" width="880">
 </p>
 
 <p align="center">
