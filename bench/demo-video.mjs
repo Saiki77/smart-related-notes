@@ -48,6 +48,8 @@ const ease = (t) => 1 - Math.pow(1 - cl(t), 3);
 const easeIO = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const back = (t) => { const c = 1.70158, u = cl(t) - 1; return 1 + (c + 1) * u * u * u + c * u * u; };
 const L = (a, b, t) => a + (b - a) * cl(t);
+// A caret that is always on is not a caret. 0.62s lit, 0.44s dark.
+const blink = (t) => ((t % 1.06) < 0.62 ? 1 : 0);
 // Appears, holds, leaves. The hold is the point: a beat that never rests cannot be read.
 const hold = (t, inAt, outAt, f = 0.45) => cl(ease((t - inAt) / f)) * (outAt == null ? 1 : 1 - ease((t - outAt) / f));
 
@@ -76,14 +78,19 @@ function rng(seed) { let s = seed; return () => ((s = (s * 1103515245 + 12345) &
 
 // Caption track. Lines cross-dissolve in place, so the top of the frame narrates
 // continuously instead of one label sitting there for the whole scene.
+const IN_T = 0.34, OUT_T = 0.28;
 function says(t, beats) {
   let s = "";
   for (let i = 0; i < beats.length; i++) {
     const b = beats[i], next = beats[i + 1];
-    const op = hold(t, b.at, next ? next.at : null, 0.4);
+    // out completes exactly when in begins, so the two never share the baseline
+    const inK = easeIO(cl((t - b.at) / IN_T));
+    const outK = next ? easeIO(cl((t - (next.at - OUT_T)) / OUT_T)) : 0;
+    const op = inK * (1 - outK);
     if (op <= 0.004) continue;
-    s += T(W / 2, 40, b.head, { size: 31, weight: 600, anchor: "middle", ls: -0.4, op });
-    if (b.sub) s += T(W / 2, 66, b.sub, { fill: C.mut, size: 16.5, anchor: "middle", op: op * 0.92 });
+    const dy = (1 - inK) * 9 - outK * 9;
+    s += T(W / 2, 40 + dy, b.head, { size: 31, weight: 600, anchor: "middle", ls: -0.4, op });
+    if (b.sub) s += T(W / 2, 66 + dy, b.sub, { fill: C.mut, size: 16.5, anchor: "middle", op: op * 0.92 });
   }
   return s;
 }
@@ -94,12 +101,12 @@ WIN.ed = { x: WIN.x + WIN.ribbon + WIN.tree };
 WIN.ed.w = WIN.w - WIN.ribbon - WIN.tree - WIN.panel;
 WIN.pn = { x: WIN.x + WIN.w - WIN.panel, w: WIN.panel };
 
-const TREE = ["Concepts", "Backpropagation", "Gradient Descent", "Loss Function", "Ideen", "Backprop als Fee…", "Rekursion in Ges…", "Daily", "2026-02-07"];
-const LONGTREE = ["Attention", "Autoencoder", "Backpropagation", "Bayes", "Chain Rule", "Convolution", "Cross Entropy", "Dropout", "Eigenwerte", "Entropy", "Fourier", "Gradient Descent", "Hash Function", "Hash Table", "Jacobian", "Kettenregel", "Loss Function", "Markov", "Matrixmultiplikation", "Momentum", "Normalisierung", "Optimizer", "Overfitting", "Perceptron", "Regularisierung", "RNN", "Softmax", "Transformer", "Varianz", "Vektorraum"];
+const TREE = ["Concepts", "Backpropagation", "Gradient Descent", "Loss Function", "Ideas", "Backprop as feedb…", "Recursion in stor…", "Daily", "2026-02-07"];
+const LONGTREE = ["Attention", "Autoencoder", "Backpropagation", "Bayes", "Chain Rule", "Convolution", "Cross Entropy", "Dropout", "Eigenvalues", "Entropy", "Fourier", "Gradient Descent", "Hash Function", "Hash Table", "Jacobian", "Chain Rule", "Loss Function", "Markov", "Matrix Product", "Momentum", "Normalisation", "Optimizer", "Overfitting", "Perceptron", "Regularisation", "RNN", "Softmax", "Transformer", "Variance", "Vector Space"];
 const BODY = [0.94, 0.86, 0.55, 0, 0.91, 0.72, 0.88, 0.42];
 
 function windowChrome(o = {}) {
-  const { title = "Backprop als Feedback beim Schreiben", activeTree = 5, op = 1, scroll = null } = o;
+  const { title = "Backprop as feedback when writing", activeTree = 5, op = 1, scroll = null } = o;
   let s = R(WIN.x, WIN.y, WIN.w, WIN.h, { fill: C.bg, stroke: C.edge, r: 12, op });
   s += LINE(WIN.x, WIN.y + 38, WIN.x + WIN.w, WIN.y + 38, C.edge, op);
   for (let i = 0; i < 3; i++) s += DOT(WIN.x + 20 + i * 17, WIN.y + 19, 5, [C.rose, C.gold, C.green][i], op * 0.85);
@@ -134,9 +141,9 @@ function windowChrome(o = {}) {
   return s;
 }
 function editorBody(o = {}) {
-  const { reveal = 1, dim = 1, op = 1, link = 0, caret = -1 } = o;
+  const { reveal = 1, dim = 1, op = 1, link = 0, caret = -1, t = 0, linked = 0 } = o;
   const x = WIN.ed.x + 34;
-  let s = T(x, WIN.y + 84, "Backprop als Feedback", { size: 25, weight: 600, op: op * dim });
+  let s = T(x, WIN.y + 84, "Backprop as feedback", { size: 25, weight: 600, op: op * dim });
   let y = WIN.y + 118;
   for (let i = 0; i < BODY.length; i++) {
     if (BODY[i] === 0) { y += 14; continue; }
@@ -145,15 +152,21 @@ function editorBody(o = {}) {
     s += R(x, y, wpx, 7, { fill: C.faint, r: 3.5, op: op * 0.75 * dim });
     if (i === 5 && link > 0.004) {
       const lw = 116 * ease(link);
-      s += R(x + 62, y, lw, 7, { fill: C.peri, r: 3.5, op: op * 0.9 * ease(link) });
-      s += LINE(x + 62, y + 13, x + 62 + lw, y + 13, C.peri, op * ease(link), 1.6);
+      const tone = linked > 0.5 ? C.cyan : C.peri;
+      s += R(x + 62, y, lw, 7, { fill: tone, r: 3.5, op: op * 0.9 * ease(link) });
+      // dotted while it is only a suggestion, solid once the click has made it a link
+      s += LINE(x + 62, y + 13, x + 62 + lw, y + 13, tone, op * ease(link), linked > 0.5 ? 2.2 : 1.6, linked > 0.5 ? "" : "3 3");
+      if (linked > 0.01) {
+        s += T(x + 56, y + 7, "[[", { fill: C.cyan, size: 15, weight: 600, op: op * linked });
+        s += T(x + 62 + lw + 4, y + 7, "]]", { fill: C.cyan, size: 15, weight: 600, op: op * linked });
+      }
     }
-    if (i === caret) s += R(x + wpx + 4, y - 3, 2, 14, { fill: C.ink, r: 1, op: op * (Math.floor(Date.now ? 0 : 0) === 0 ? 1 : 1) });
+    if (i === caret && wpx > 1) s += R(x + wpx + 6, y - 5, 2.5, 17, { fill: C.ink, r: 1, op: op * blink(t) });
     y += 19;
   }
   return s;
 }
-function panelShell(op = 1, sub = "Based on Backprop als Feedback") {
+function panelShell(op = 1, sub = "Based on Backprop as feedback") {
   return LINE(WIN.pn.x, WIN.y + 38, WIN.pn.x, WIN.y + WIN.h, C.edge, op)
     + T(WIN.pn.x + 20, WIN.y + 68, "Smart related notes", { size: 15.5, weight: 600, op })
     + T(WIN.pn.x + 20, WIN.y + 86, sub, { fill: C.mut, size: 12.5, op: op * 0.9 });
@@ -167,7 +180,7 @@ const CARDS = [
 const pillW = (s) => Math.round(s.length * 7.6) + 22;
 function pill(x, y, label, kind, op) {
   const w = pillW(label);
-  const st = kind === "rec" ? [C.recFill, C.recEdge, C.recInk] : [C.inner, C.innerEdge, C.mut];
+  const st = kind === "rec" ? [C.recFill, C.recEdge, C.recInk] : [C.card, C.innerEdge, C.body];
   return R(x, y, w, 19, { fill: st[0], stroke: st[1], r: 6, op }) + T(x + w / 2, y + 13.5, label, { fill: st[2], size: 12.5, anchor: "middle", op });
 }
 function card(i, k, op = 1, hi = 0) {
@@ -178,8 +191,8 @@ function card(i, k, op = 1, hi = 0) {
   let s = R(x, y, w, 66, { fill: C.inner, stroke: hi > 0.01 ? C.recEdge : C.innerEdge, r: 9, op, sw: 1 + hi * 0.8 });
   if (hi > 0.01) s += RING(x + w / 2, y + 31, 0, C.recEdge, 0);
   s += T(x + 16, y + 24, c.t, { fill: C.body, size: 15, weight: 500, op });
-  s += R(x + w - 56, y + 11, 42, 20, { fill: c.pct >= 30 ? C.peri : C.innerEdge, r: 10, op });
-  s += T(x + w - 35, y + 25, `${c.pct}%`, { fill: "#0d0d12", size: 13, weight: 700, anchor: "middle", op });
+  s += R(x + w - 58, y + 11, 46, 22, { fill: c.pct >= 30 ? C.peri : C.grey, r: 11, op });
+  s += T(x + w - 35, y + 26, `${c.pct}%`, { fill: "#0d0d12", size: 13, weight: 700, anchor: "middle", op });
   s += pill(x + 16, y + 34, c.pill[0], c.pill[1], op);
   return s;
 }
@@ -190,11 +203,9 @@ function sProblem(t) {
     { at: 0.4, head: "You already wrote about this.", sub: "Months ago, in a note you have forgotten." },
     { at: 3.4, head: "494 notes in.", sub: "You are not going to find it by scrolling." },
   ]);
-  s += windowChrome({ scroll: t > 3.0 ? ease((t - 3.0) / 2.4) * 0.9 : null, caret: 5 });
-  s += editorBody({ reveal: ease((t - 0.2) / 1.1), caret: 5 });
+  s += windowChrome({ scroll: t > 3.0 ? ease((t - 3.0) / 2.4) * 0.9 : null });
+  s += editorBody({ reveal: ease((t - 0.2) / 1.4), caret: 7, t });
   s += panelShell(hold(t, 0.9, null, 0.6) * 0.55);
-  // a caret blinking at the end of the last line, so the note reads as being written
-  if (t > 1.2 && Math.floor(t * 1.8) % 2 === 0) s += R(WIN.ed.x + 34 + (WIN.ed.w - 90) * 0.42 + 6, WIN.y + 231, 2, 14, { fill: C.ink, r: 1 });
   return s;
 }
 
@@ -211,26 +222,27 @@ function sSearch(t) {
   s += R(bx, 130, bw, 52, { fill: C.card, stroke: C.cardEdge, r: 26, op: hold(t, 0.2, null, 0.4) });
   s += `<g opacity="${hold(t, 0.2, null, 0.4).toFixed(3)}"><circle cx="${bx + 32}" cy="156" r="8" fill="none" stroke="${C.dim}" stroke-width="2"/><line x1="${bx + 38}" y1="162" x2="${bx + 45}" y2="169" stroke="${C.dim}" stroke-width="2"/></g>`;
   s += T(bx + 58, 162, typed || "search…", { fill: typed ? C.body : C.dim, size: 20, op: hold(t, 0.2, null, 0.4) });
-  if (t > 0.5 && t < 1.8 && Math.floor(t * 3) % 2 === 0) s += R(bx + 60 + typed.length * 8.6, 146, 2, 20, { fill: C.ink, r: 1 });
+  if (t > 0.5 && t < 2.4) s += R(bx + 60 + typed.length * 10.4, 143, 2.5, 24, { fill: C.ink, r: 1, op: blink(t) });
 
   // the note you would have wanted, which shares no words with the query
   const nk = hold(t, 3.4, null, 0.5);
-  const noteCard = (x, title, lines, tone, k) => {
+  const noteCard = (x, title, lines, tone, k, gloss) => {
     if (k <= 0.004) return "";
-    let o = R(x, 240, 380, 190, { fill: C.card, stroke: C.cardEdge, r: 12, op: k });
+    let o = R(x, 240, 380, 206, { fill: C.card, stroke: C.cardEdge, r: 12, op: k });
     o += T(x + 24, 274, title, { fill: C.body, size: 17, weight: 600, op: k });
     for (let i = 0; i < lines.length; i++) o += T(x + 24, 306 + i * 26, lines[i], { fill: i === 0 ? tone : C.mut, size: 15.5, op: k });
+    if (gloss) o += T(x + 24, 420, gloss, { fill: C.dim, size: 13, op: k * 0.95 });
     return o;
   };
   const hit = hold(t, 1.9, null, 0.5);
-  s += noteCard(150, "What you are writing now", ["“gradient descent”", "the optimizer follows the slope", "downhill, step by step"], C.peri, hit);
-  s += noteCard(670, "2026-02-07, six months ago", ["“den Fehler rückwärts schieben”", "Kettenregel per Hand gerechnet,", "drei Seiten Papier"], C.gold, nk);
+  s += noteCard(150, "What you are writing now", ["“gradient descent”", "the optimizer follows the slope", "downhill, step by step"], C.peri, hit, "English");
+  s += noteCard(670, "2026-02-07, six months ago", ["“den Fehler rückwärts schieben”", "Kettenregel per Hand gerechnet,", "drei Seiten Papier"], C.gold, nk, "German, and it means the same thing");
   const xk = hold(t, 4.3, null, 0.45);
   if (xk > 0.004) {
-    s += LINE(530, 335, 670, 335, C.innerEdge, xk * 0.8, 1.6, "6 6");
-    s += LINE(590, 325, 610, 345, C.rose, xk, 2.4);
-    s += LINE(610, 325, 590, 345, C.rose, xk, 2.4);
-    s += T(600, 470, "Not one word in common. Search will never join these.", { fill: C.body, size: 16.5, anchor: "middle", op: xk });
+    s += LINE(532, 343, 668, 343, C.innerEdge, xk * 0.8, 1.6, "6 6");
+    s += LINE(590, 333, 610, 353, C.rose, xk, 2.4);
+    s += LINE(610, 333, 590, 353, C.rose, xk, 2.4);
+    s += T(600, 486, "Not one word in common. Search will never join these.", { fill: C.body, size: 16.5, anchor: "middle", op: xk });
   }
   return s;
 }
@@ -253,7 +265,7 @@ function sIdea(t, map) {
     R(p.x - 115, p.y - 48, 230, 96, { fill: C.inner, stroke: C.innerEdge, r: 10, op: k })
     + T(p.x - 97, p.y - 20, title, { fill: C.body, size: 15.5, weight: 600, op: k })
     + T(p.x - 97, p.y, lang, { fill: C.mut, size: 12.5, op: k });
-  s += noteCard(note, "Backprop als Feedback", "written in English", hold(t, 0.15, null, 0.4));
+  s += noteCard(note, "Backprop as feedback", "written in English", hold(t, 0.15, null, 0.4));
   s += noteCard({ x: note.x, y: note.y + 190 }, "2026-02-07", "written in German", hold(t, 6.2, null, 0.4));
 
   const mk = hold(t, 0.35, null, 0.4);
@@ -374,15 +386,21 @@ function sReceipt(t) {
     { at: 3.4, head: "Mentioned a concept you have a note for?", sub: "It glows. One click makes it a link." },
   ]);
   s += windowChrome();
-  s += editorBody({ dim: 0.8, link: ease((t - 3.6) / 0.7) });
+  const CLICK = 4.5;
+  s += editorBody({ dim: 0.8, link: ease((t - 3.5) / 0.6), t, linked: hold(t, CLICK, null, 0.3) });
   s += panelShell();
   for (let i = 0; i < CARDS.length; i++) s += card(i, 1, 1, i >= 2 ? hold(t, 0.7 + (i - 2) * 0.3, null, 0.4) : 0);
-  const pk = hold(t, 4.1, null, 0.4);
+  // the phrase sits on body line 5; put the pointer ON it, and let it travel in
+  const gy = WIN.y + 208, gx = WIN.ed.x + 34 + 62;
+  const pk = hold(t, 3.9, null, 0.3);
   if (pk > 0.004) {
-    const px = WIN.ed.x + 150, py = WIN.y + 232;
-    s += `<path d="M ${px} ${py} l 0 15 l 4 -4 l 3 7 l 3 -1 l -3 -7 l 6 0 Z" fill="${C.ink}" opacity="${(pk * 0.95).toFixed(3)}"/>`;
-    const r = ((t - 4.1) % 1.1) / 1.1;
-    s += RING(px, py, 6 + r * 24, C.peri, pk * 0.5 * (1 - r));
+    const travel = ease((t - 3.9) / 0.6);
+    const px = L(gx + 190, gx + 58, travel), py = L(gy + 66, gy + 6, travel);
+    if (t >= CLICK) {
+      const r = cl((t - CLICK) / 0.55);
+      s += RING(px, py, 4 + r * 26, C.cyan, 0.75 * (1 - r), 2.2);
+    }
+    s += `<path d="M ${px.toFixed(1)} ${py.toFixed(1)} l 0 16 l 4.5 -4.5 l 3 7.5 l 3.5 -1.5 l -3 -7 l 6.5 0 Z" fill="${C.ink}" stroke="${C.page}" stroke-width="1" opacity="${(pk * 0.98).toFixed(3)}"/>`;
   }
   return s;
 }
@@ -422,8 +440,8 @@ function sMap(t, map) {
 // ==================================================================== 8. close
 function sClose(t) {
   const a = hold(t, 0.15, null, 0.5);
-  let s = T(W / 2 - 34, 258, "Smart Related Notes", { size: 50, weight: 600, anchor: "middle", ls: -1.2, op: a });
-  s += T(W / 2 + 278, 258, "3.0", { size: 50, weight: 600, anchor: "middle", fill: C.green, op: a });
+  let s = T(W / 2 - 52, 258, "Smart Related Notes", { size: 50, weight: 600, anchor: "middle", ls: -1.2, op: a });
+  s += T(W / 2 + 262, 258, "3.0", { size: 50, weight: 600, anchor: "middle", fill: C.green, op: a });
   s += T(W / 2, 300, "Community plugins  ›  Browse  ›  Smart Related Notes", { fill: C.body, size: 18.5, anchor: "middle", op: hold(t, 0.7, null, 0.45) });
   const c = hold(t, 1.2, null, 0.45);
   s += R(W / 2 - 230, 330, 460, 46, { fill: C.recFill, stroke: C.recEdge, r: 10, op: c });
@@ -489,7 +507,8 @@ for (let n = 0; n < total; n++) {
     }
     g += `<g opacity="${l.a.toFixed(3)}"${f}>${l.body}</g>`;
   }
-  g += R(0, H - 3, W * (n / total), 3, { fill: C.green, r: 0, op: 0.7 });
+  g += R(46, H - 16, W - 92, 4, { fill: C.faint, r: 2, op: 0.55 });
+  g += R(46, H - 16, (W - 92) * (n / total), 4, { fill: C.green, r: 2, op: 0.95 });
   writeFileSync(join(OUT, `f${String(n).padStart(5, "0")}.svg`),
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" font-family="${FONT}">`
     + `<defs>${defs}</defs><rect width="${W}" height="${H}" fill="${C.page}"/>${g}</svg>`);
