@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="docs/hero.svg" alt="Smart Related Notes: the notes most related to what you're writing, found by meaning and by your own links, running entirely on your machine" width="880">
+  <img src="docs/demo.gif" alt="Smart Related Notes in 25 seconds: the panel ranking a note's neighbours by meaning; two notes with no wording in common connected through a note you linked to both, the card saying via that note, held-out link recall 0.75 from 0.66; daily notes going from crowding 8.2 of 10 to 3.4; and a map of the whole vault clustered and named automatically" width="880">
+</p>
+
+<p align="center">
+  <sub><a href="docs/demo.mp4">Crisper, as MP4</a>&nbsp; ·&nbsp; every number in it is measured, see <a href="ARCHITECTURE.md">ARCHITECTURE.md</a></sub>
 </p>
 
 # Smart Related Notes
