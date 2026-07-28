@@ -8,9 +8,9 @@ export const VIEW_TYPE_MAP = "smart-related-notes-map";
 // survive the common forms of colour blindness reasonably well (no red/green
 // pair carrying meaning on its own; the label text carries it too).
 const CLUSTER_COLORS = [
-  "#5288d0", "#4fc98a", "#c052d0", "#e0a552", "#52c8d0",
-  "#d05285", "#8a7ad0", "#6fd052", "#d0a052", "#52a0d0",
-  "#c98a4f", "#7ad0b0", "#d07a7a", "#9ed052", "#a052d0", "#52d0a0",
+  "#5fe3a3", "#a6b0f5", "#f7d68a", "#6fe0ea", "#e09aab", "#b79af0",
+  "#8ecfa0", "#8aa9e6", "#e6b36f", "#7fd6c8", "#d69ac0", "#a3c78a",
+  "#c8a6f0", "#6fc4b0", "#eaa98a", "#94b8d6",
 ];
 
 // =============================================================================
@@ -72,13 +72,18 @@ export class VaultMapView extends ItemView {
     }
 
     // Legend doubles as the filter: clicking a cluster hides or shows it.
-    const legend = el.createDiv({ cls: "rn-map-legend" });
+    const body = el.createDiv({ cls: "rn-map-body" });
+    const plot = body.createDiv({ cls: "rn-map-plot" });
+    const legend = body.createDiv({ cls: "rn-map-legend" });
+    legend.createDiv({ cls: "rn-map-legend-head", text: "Clusters" });
     for (const cluster of this.map.clusters) {
       const chip = legend.createDiv({ cls: "rn-map-chip" });
       if (this.hidden.has(cluster.id)) chip.addClass("is-off");
       chip.createDiv({ cls: "rn-map-swatch" }).style.backgroundColor =
         CLUSTER_COLORS[cluster.id % CLUSTER_COLORS.length];
-      chip.createSpan({ text: `${cluster.label} (${cluster.size})` });
+      const meta = chip.createDiv({ cls: "rn-map-chip-meta" });
+      meta.createDiv({ cls: "rn-map-chip-name", text: cluster.label });
+      meta.createDiv({ cls: "rn-map-chip-count", text: `${cluster.size} notes` });
       chip.addEventListener("click", () => {
         if (this.hidden.has(cluster.id)) this.hidden.delete(cluster.id);
         else this.hidden.add(cluster.id);
@@ -87,7 +92,7 @@ export class VaultMapView extends ItemView {
     }
 
     const W = 1000, H = 700, PAD = 28;
-    const svg = el.createSvg("svg", {
+    const svg = plot.createSvg("svg", {
       cls: "rn-map-svg",
       attr: { viewBox: `0 0 ${W} ${H}` },
     });
@@ -121,13 +126,19 @@ export class VaultMapView extends ItemView {
       if (members.length < 3) continue;
       const cx = members.reduce((s, p) => s + sx(p.x), 0) / members.length;
       const cy = members.reduce((s, p) => s + sy(p.y), 0) / members.length;
-      svg.createSvg("text", {
-        cls: "rn-map-label",
-        attr: { x: cx.toFixed(1), y: cy.toFixed(1), "text-anchor": "middle" },
-      }).textContent = cluster.label;
+      // Two copies: a thick stroked one underneath as a halo, then the fill on top.
+      // paint-order would be neater but is not reliable across the Electron versions
+      // Obsidian ships, and a label that vanishes into the points is worse than a
+      // slightly heavier one.
+      for (const cls of ["rn-map-label-halo", "rn-map-label"]) {
+        svg.createSvg("text", {
+          cls,
+          attr: { x: cx.toFixed(1), y: cy.toFixed(1), "text-anchor": "middle" },
+        }).textContent = cluster.label;
+      }
     }
 
-    el.createDiv({
+    plot.createDiv({
       cls: "rn-map-foot",
       text: `${visible.length} of ${this.map.points.length} notes. Click a point to open it, or a cluster to hide it.`,
     });
