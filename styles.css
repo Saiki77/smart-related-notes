@@ -513,6 +513,14 @@
   r: 7;
 }
 
+/* A hidden cluster keeps its colour at low alpha rather than vanishing. Removing the
+   points changed the shape of the map under the reader and lost where the group sat,
+   which is the thing you wanted to see the rest against. */
+.rn-map-dot.is-off {
+  opacity: 0.13;
+  pointer-events: none;
+}
+
 /* Halo first, fill on top: a cluster name has to survive being drawn over its own
    points, and a plain fill disappears into them. */
 .rn-map-label-halo {

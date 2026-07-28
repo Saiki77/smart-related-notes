@@ -99,11 +99,19 @@ export class VaultMapView extends ItemView {
 
     const sx = (x: number): number => PAD + x * (W - 2 * PAD);
     const sy = (y: number): number => PAD + y * (H - 2 * PAD);
-    const visible = this.map.points.filter((p) => !this.hidden.has(p.cluster));
+    const shown = this.map.points.filter((p) => !this.hidden.has(p.cluster));
 
-    for (const p of visible) {
+    // Dimmed points are drawn FIRST so live ones sit above them, and they keep their
+    // colour at low alpha rather than turning grey: the point of hiding a cluster is
+    // to read the rest against it, which needs it still legible as that cluster.
+    const ordered = [...this.map.points].sort(
+      (a, b) => Number(this.hidden.has(a.cluster)) === Number(this.hidden.has(b.cluster))
+        ? 0 : this.hidden.has(a.cluster) ? -1 : 1,
+    );
+    for (const p of ordered) {
+      const off = this.hidden.has(p.cluster);
       const circle = svg.createSvg("circle", {
-        cls: "rn-map-dot",
+        cls: off ? "rn-map-dot is-off" : "rn-map-dot",
         attr: {
           cx: sx(p.x).toFixed(1),
           cy: sy(p.y).toFixed(1),
@@ -120,12 +128,39 @@ export class VaultMapView extends ItemView {
 
     // One label per visible cluster, placed at its centre of mass. Drawn last so
     // it sits above the points, with a halo so it stays readable over them.
+    // Label placement. A centroid is the honest position but several clusters can
+    // have centroids within a few pixels of each other in a dense region, and three
+    // labels stacked on one spot is worse than three labels slightly off-centre. So
+    // place at the centroid, then relax: repeatedly push any overlapping pair apart
+    // vertically until they clear, capped so a label never drifts far from its own
+    // points.
+    type Placed = { cluster: { id: number; label: string }; x: number; y: number; y0: number; w: number };
+    const placed: Placed[] = [];
     for (const cluster of this.map.clusters) {
       if (this.hidden.has(cluster.id)) continue;
-      const members = visible.filter((p) => p.cluster === cluster.id);
+      const members = shown.filter((p) => p.cluster === cluster.id);
       if (members.length < 3) continue;
       const cx = members.reduce((s, p) => s + sx(p.x), 0) / members.length;
       const cy = members.reduce((s, p) => s + sy(p.y), 0) / members.length;
+      placed.push({ cluster, x: cx, y: cy, y0: cy, w: cluster.label.length * 7 + 12 });
+    }
+    const LINE_H = 19, MAX_DRIFT = 46;
+    for (let pass = 0; pass < 24; pass++) {
+      let moved = false;
+      for (let a = 0; a < placed.length; a++) {
+        for (let b = a + 1; b < placed.length; b++) {
+          const A = placed[a], B = placed[b];
+          const dx = Math.abs(A.x - B.x), dy = Math.abs(A.y - B.y);
+          if (dx > (A.w + B.w) / 2 || dy > LINE_H) continue;
+          const push = (LINE_H - dy) / 2 + 0.5;
+          const up = A.y <= B.y ? A : B, down = A.y <= B.y ? B : A;
+          if (Math.abs(up.y - push - up.y0) < MAX_DRIFT) { up.y -= push; moved = true; }
+          if (Math.abs(down.y + push - down.y0) < MAX_DRIFT) { down.y += push; moved = true; }
+        }
+      }
+      if (!moved) break;
+    }
+    for (const { cluster, x: cx, y: cy } of placed) {
       // Two copies: a thick stroked one underneath as a halo, then the fill on top.
       // paint-order would be neater but is not reliable across the Electron versions
       // Obsidian ships, and a label that vanishes into the points is worse than a
@@ -140,7 +175,7 @@ export class VaultMapView extends ItemView {
 
     plot.createDiv({
       cls: "rn-map-foot",
-      text: `${visible.length} of ${this.map.points.length} notes. Click a point to open it, or a cluster to hide it.`,
+      text: `${shown.length} of ${this.map.points.length} notes. Click a point to open it, or a cluster to hide it.`,
     });
   }
 }
