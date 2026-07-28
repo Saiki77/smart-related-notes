@@ -287,16 +287,13 @@ optional WebGPU path uses fp32 weights (~470 MB for the default model). The mode
 is downloaded once per backend, then cached. The plugin also fetches the
 version-pinned ONNX runtime once, into its own `ort/` folder.
 
-### Running the 3.0 beta
+### Other ways
 
-The store serves the current stable release. 3.0 is still a pre-release, so
-installing from the store will not give you the features described at the top of
-this page. To run it, either add this repository in
-[BRAT](https://github.com/TfTHacker/obsidian42-brat), which will keep it updated,
-or download `main.js`, `manifest.json` and `styles.css` from the
+If the store has not caught up yet, or you want to track development, add this
+repository in [BRAT](https://github.com/TfTHacker/obsidian42-brat), or download
+`main.js`, `manifest.json` and `styles.css` from the
 [latest release](https://github.com/Saiki77/smart-related-notes/releases) into
-`.obsidian/plugins/smart-related-notes/` yourself. It is a beta: unstable, and in
-progress.
+`.obsidian/plugins/smart-related-notes/` yourself.
 
 ## Requirements
 
