@@ -641,7 +641,7 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 // growth stops once a group clears the word floor, so ideas converge on the target size
 // without over-merging into one blob. Ideas are contiguous runs. O(n^2), n<=48.
 function mergeSmallIdeas(bodyChunks: NoteChunk[]): void {
-  let groups: [number, number][] = [];
+  const groups: [number, number][] = [];
   let s = 0;
   for (let i = 1; i <= bodyChunks.length; i++) {
     if (i === bodyChunks.length || bodyChunks[i].ideaId !== bodyChunks[i - 1].ideaId) {

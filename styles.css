@@ -330,17 +330,18 @@
   /* A slim blue underline: a subtle, non-intrusive hint that a concept has a note
      and can be linked — and visually distinct from a real wikilink (which the theme
      colours differently). No background/highlight, so it never distracts. */
-  text-decoration: underline;
-  text-decoration-color: var(--color-blue);
-  text-decoration-thickness: 1px;
-  text-underline-offset: 3px;
+  /* A border rather than the text-decoration longhands: thickness, colour and
+     offset are only partially supported on the Electron older Obsidian builds
+     ship, and a bottom border draws the same slim rule everywhere. */
+  border-bottom: 1px solid var(--color-blue);
+  padding-bottom: 2px;
   cursor: pointer;
-  transition: text-decoration-thickness 120ms ease;
+  transition: border-bottom-width 120ms ease;
 }
 
 .srn-glow:hover {
   /* Gentle affordance on hover — just a slightly thicker underline. */
-  text-decoration-thickness: 2px;
+  border-bottom-width: 2px;
 }
 
 /* =============================================================================

@@ -87,31 +87,30 @@ export class VaultMapView extends ItemView {
     }
 
     const W = 1000, H = 700, PAD = 28;
-    const doc = this.contentEl.doc;
-    const svg = doc.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-    svg.addClass("rn-map-svg");
-    el.appendChild(svg);
+    const svg = el.createSvg("svg", {
+      cls: "rn-map-svg",
+      attr: { viewBox: `0 0 ${W} ${H}` },
+    });
 
     const sx = (x: number): number => PAD + x * (W - 2 * PAD);
     const sy = (y: number): number => PAD + y * (H - 2 * PAD);
     const visible = this.map.points.filter((p) => !this.hidden.has(p.cluster));
 
     for (const p of visible) {
-      const circle = doc.createElementNS("http://www.w3.org/2000/svg", "circle");
-      circle.setAttribute("cx", sx(p.x).toFixed(1));
-      circle.setAttribute("cy", sy(p.y).toFixed(1));
-      circle.setAttribute("r", "4.5");
-      circle.setAttribute("fill", CLUSTER_COLORS[p.cluster % CLUSTER_COLORS.length]);
-      circle.addClass("rn-map-dot");
-      const title = doc.createElementNS("http://www.w3.org/2000/svg", "title");
-      title.textContent = p.title;
-      circle.appendChild(title);
+      const circle = svg.createSvg("circle", {
+        cls: "rn-map-dot",
+        attr: {
+          cx: sx(p.x).toFixed(1),
+          cy: sy(p.y).toFixed(1),
+          r: "4.5",
+          fill: CLUSTER_COLORS[p.cluster % CLUSTER_COLORS.length],
+        },
+      });
+      circle.createSvg("title").textContent = p.title;
       circle.addEventListener("click", () => {
         const file = this.app.vault.getAbstractFileByPath(p.path);
         if (file instanceof TFile) void this.app.workspace.getLeaf(false).openFile(file);
       });
-      svg.appendChild(circle);
     }
 
     // One label per visible cluster, placed at its centre of mass. Drawn last so
@@ -122,13 +121,10 @@ export class VaultMapView extends ItemView {
       if (members.length < 3) continue;
       const cx = members.reduce((s, p) => s + sx(p.x), 0) / members.length;
       const cy = members.reduce((s, p) => s + sy(p.y), 0) / members.length;
-      const text = doc.createElementNS("http://www.w3.org/2000/svg", "text");
-      text.setAttribute("x", cx.toFixed(1));
-      text.setAttribute("y", cy.toFixed(1));
-      text.setAttribute("text-anchor", "middle");
-      text.addClass("rn-map-label");
-      text.textContent = cluster.label;
-      svg.appendChild(text);
+      svg.createSvg("text", {
+        cls: "rn-map-label",
+        attr: { x: cx.toFixed(1), y: cy.toFixed(1), "text-anchor": "middle" },
+      }).textContent = cluster.label;
     }
 
     el.createDiv({
