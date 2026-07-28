@@ -1,11 +1,16 @@
 // Generates the README showcase video as SVG frames, rendered to PNG and muxed by
-// ffmpeg. Nothing here is a screen recording: the panel contents are the real
-// rankings this plugin produced on the lab vault, and the map scene replays the
-// actual projected points from bench/vault-map-figure.mjs.
+// ffmpeg. Not a screen recording: every frame is drawn, so the video is a diff and
+// can be rebuilt when a number changes.
 //
 //   node bench/demo-video.mjs <frames-dir> [mapdata.json]
 //
-// Design tokens are the 3.0 set, matching docs/*.svg exactly.
+// The content is real. Panel cards are the rankings this plugin returned for
+// "Backprop als Feedback beim Schreiben" in the lab vault, and the map scene
+// replays the projected points from bench/vault-map-figure.mjs.
+//
+// It is built to be watched, not read: the note lives inside an Obsidian window the
+// whole time, the abstract steps (a note becoming a point, a point finding its
+// neighbours) happen ON that window, and captions are one short line.
 import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -16,267 +21,410 @@ mkdirSync(OUT, { recursive: true });
 const W = 1200, H = 620, FPS = 25;
 
 const C = {
-  bg: "#191920", edge: "#2e2e38",
+  page: "#111116", bg: "#191920", edge: "#2e2e38",
   card: "#15151b", cardEdge: "#2a2a34",
   inner: "#1e1e27", innerEdge: "#3a3a48",
-  ink: "#ededf2", body: "#c8cbd6", mut: "#8a8f9e", dim: "#6b7080",
+  ink: "#ededf2", body: "#c8cbd6", mut: "#8a8f9e", dim: "#6b7080", faint: "#3a3a48",
   green: "#4fc98a", recFill: "#1c2620", recEdge: "#3f6b52", recInk: "#8ee8ba",
   peri: "#8a93c8", gold: "#e6c074", cyan: "#52c8d0", grey: "#a7a7b4", rose: "#9a7f8b",
-  track: "#23232d",
 };
 const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-const clamp01 = (t) => Math.max(0, Math.min(1, t));
-// easeOutCubic: motion decelerates into place, so a card settles rather than snapping.
-const ease = (t) => 1 - Math.pow(1 - clamp01(t), 3);
-const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
-const lerp = (a, b, t) => a + (b - a) * clamp01(t);
+const cl = (t) => Math.max(0, Math.min(1, t));
+const ease = (t) => 1 - Math.pow(1 - cl(t), 3);            // decelerate into place
+const easeIO = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const back = (t) => { const c = 1.70158, u = cl(t) - 1; return 1 + (c + 1) * u * u * u + c * u * u; };
+const L = (a, b, t) => a + (b - a) * cl(t);
 
-// ---------------------------------------------------------------- scene data
-// Real panel output for "Backprop als Feedback beim Schreiben" in the lab vault.
-const CARDS = [
-  { t: "Backpropagation",          pct: 49, pills: [["Linked", "linked"]],                                 sub: "computing the gradient" },
-  { t: "Gradient Descent",         pct: 35, pills: [["Related", "rel"], ["#machine-learning", "tag"]],     sub: "iterative optimization" },
-  { t: "Machine Learning MOC",     pct: 32, pills: [["Related", "rel"], ["via Backpropagation", "via"]],   sub: "Klassifikation Decision Tree" },
-  { t: "Recurrent Neural Network", pct: 16, pills: [["Related", "rel"], ["via Backpropagation", "via"]],   sub: "limitation during Backpropagation" },
-];
-
-const SCENES = [
-  { id: "title",    dur: 2.4 },
-  { id: "panel",    dur: 5.2 },
-  { id: "graph",    dur: 5.6 },
-  { id: "decrowd",  dur: 4.0 },
-  { id: "map",      dur: 5.2 },
-  { id: "outro",    dur: 2.6 },
-];
-const TOTAL = SCENES.reduce((a, s) => a + s.dur, 0);
-
-// ---------------------------------------------------------------- primitives
-function frameOpen() {
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" font-family="${FONT}">
-<rect width="${W}" height="${H}" fill="${C.bg}"/>`;
-}
-const frameClose = () => `</svg>`;
-
-function text(x, y, s, { fill = C.ink, size = 15, weight = 400, anchor = "start", op = 1, ls = 0 } = {}) {
-  if (op <= 0.001) return "";
+function T(x, y, s, o = {}) {
+  const { fill = C.ink, size = 15, weight = 400, anchor = "start", op = 1, ls = 0 } = o;
+  if (op <= 0.004) return "";
   return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" fill="${fill}" font-size="${size}" font-weight="${weight}" text-anchor="${anchor}" opacity="${op.toFixed(3)}" letter-spacing="${ls}">${esc(s)}</text>`;
 }
-function rect(x, y, w, h, { fill = C.card, stroke = C.cardEdge, r = 12, op = 1, sw = 1 } = {}) {
-  if (op <= 0.001 || w <= 0 || h <= 0) return "";
+function R(x, y, w, h, o = {}) {
+  const { fill = C.card, stroke = null, r = 10, op = 1, sw = 1 } = o;
+  if (op <= 0.004 || w <= 0.2 || h <= 0.2) return "";
   const st = stroke ? ` stroke="${stroke}" stroke-width="${sw}"` : "";
   return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="${r}" fill="${fill}"${st} opacity="${op.toFixed(3)}"/>`;
 }
-// Pill widths are computed from a per-character advance so text never overruns its
-// capsule; measuring properly is not available without a font engine.
-const pillW = (label, size = 12) => Math.round(label.length * size * 0.58) + 22;
-function pill(x, y, label, kind, op = 1) {
-  if (op <= 0.001) return "";
+const DOT = (x, y, r, fill, op = 1) =>
+  op <= 0.004 || r <= 0.05 ? "" : `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(2)}" fill="${fill}" opacity="${op.toFixed(3)}"/>`;
+const LINE = (x1, y1, x2, y2, stroke, op = 1, sw = 1.5, dash = "") =>
+  op <= 0.004 ? "" : `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${stroke}" stroke-width="${sw}" opacity="${op.toFixed(3)}"${dash ? ` stroke-dasharray="${dash}"` : ""}/>`;
+// Quadratic bezier point, for arcs that read as motion rather than teleporting.
+const qbez = (p0, p1, p2, t) => ({
+  x: (1 - t) * (1 - t) * p0.x + 2 * (1 - t) * t * p1.x + t * t * p2.x,
+  y: (1 - t) * (1 - t) * p0.y + 2 * (1 - t) * t * p1.y + t * t * p2.y,
+});
+
+// ------------------------------------------------------------------ the window
+// One Obsidian window holds every scene, so the viewer never loses the context of
+// where this actually happens.
+const WIN = { x: 40, y: 74, w: 1120, h: 508, ribbon: 44, tree: 158, panel: 316 };
+WIN.ed = { x: WIN.x + WIN.ribbon + WIN.tree, y: WIN.y + 38 };
+WIN.ed.w = WIN.w - WIN.ribbon - WIN.tree - WIN.panel;
+WIN.ed.h = WIN.h - 38;
+WIN.pn = { x: WIN.x + WIN.w - WIN.panel, y: WIN.y + 38, w: WIN.panel, h: WIN.h - 38 };
+
+const TREE = ["Concepts", "Backpropagation", "Gradient Descent", "Loss Function", "Ideen", "Backprop als Fee…", "Rekursion in Ges…", "Daily", "2026-02-07"];
+const BODY = [
+  [0.94, 1], [0.86, 1], [0.55, 1], [0, 0],
+  [0.91, 1], [0.72, 1], [0.88, 1], [0.42, 1],
+];
+
+function windowChrome(op = 1, o = {}) {
+  const { title = "Backprop als Feedback beim Schreiben", activeTree = 5 } = o;
+  let s = R(WIN.x, WIN.y, WIN.w, WIN.h, { fill: C.bg, stroke: C.edge, r: 12, op });
+  // title bar + traffic lights
+  s += LINE(WIN.x, WIN.y + 38, WIN.x + WIN.w, WIN.y + 38, C.edge, op, 1);
+  for (let i = 0; i < 3; i++) s += DOT(WIN.x + 20 + i * 17, WIN.y + 19, 5, [C.rose, C.gold, C.green][i], op * 0.85);
+  s += T(WIN.x + WIN.w / 2, WIN.y + 24, title, { fill: C.mut, size: 12.5, anchor: "middle", op: op * 0.9 });
+  // ribbon
+  s += LINE(WIN.x + WIN.ribbon, WIN.y + 38, WIN.x + WIN.ribbon, WIN.y + WIN.h, C.edge, op, 1);
+  for (let i = 0; i < 6; i++) {
+    const active = i === 3;
+    s += R(WIN.x + 13, WIN.y + 58 + i * 32, 18, 18, { fill: active ? C.peri : C.faint, r: 5, op: op * (active ? 0.95 : 0.5) });
+  }
+  // file tree
+  s += LINE(WIN.x + WIN.ribbon + WIN.tree, WIN.y + 38, WIN.x + WIN.ribbon + WIN.tree, WIN.y + WIN.h, C.edge, op, 1);
+  for (let i = 0; i < TREE.length; i++) {
+    const isFolder = [0, 4, 7].includes(i);
+    const y = WIN.y + 62 + i * 25;
+    if (i === activeTree) s += R(WIN.x + WIN.ribbon + 8, y - 13, WIN.tree - 16, 22, { fill: C.inner, r: 5, op: op * 0.9 });
+    s += T(WIN.x + WIN.ribbon + (isFolder ? 16 : 26), y + 3, TREE[i], {
+      fill: isFolder ? C.mut : i === activeTree ? C.body : C.dim, size: 11.5, weight: isFolder ? 600 : 400, op: op * 0.95,
+    });
+  }
+  return s;
+}
+
+// The note body as typographic bars, so the eye reads "a note" without reading words.
+function editorBody(op, o = {}) {
+  const { reveal = 1, dim = 1 } = o;
+  const x = WIN.ed.x + 34;
+  let s = T(x, WIN.y + 84, "Backprop als Feedback", { size: 21, weight: 600, op: op * dim });
+  let y = WIN.y + 118;
+  for (let i = 0; i < BODY.length; i++) {
+    const [wf] = BODY[i];
+    if (wf === 0) { y += 14; continue; }
+    const k = cl((reveal - i * 0.06) / 0.2);
+    s += R(x, y, (WIN.ed.w - 90) * wf * k, 7, { fill: C.faint, r: 3.5, op: op * 0.75 * dim });
+    y += 19;
+  }
+  return s;
+}
+
+function panelShell(op, o = {}) {
+  const { sub = "Based on Backprop als Feedback" } = o;
+  let s = LINE(WIN.pn.x, WIN.y + 38, WIN.pn.x, WIN.y + WIN.h, C.edge, op, 1);
+  s += T(WIN.pn.x + 20, WIN.y + 68, "Smart related notes", { size: 13.5, weight: 600, op });
+  s += T(WIN.pn.x + 20, WIN.y + 86, sub, { fill: C.dim, size: 11, op: op * 0.9 });
+  return s;
+}
+
+const CARDS = [
+  { t: "Backpropagation",          pct: 49, pills: [["Linked", "rec"]] },
+  { t: "Gradient Descent",         pct: 35, pills: [["Related", "rel"]] },
+  { t: "Machine Learning MOC",     pct: 32, pills: [["via Backpropagation", "rec"]] },
+  { t: "Recurrent Neural Network", pct: 16, pills: [["via Backpropagation", "rec"]] },
+];
+const pillW = (s) => Math.round(s.length * 6.9) + 20;
+function pill(x, y, label, kind, op) {
   const w = pillW(label);
-  const style = {
-    linked: [C.recFill, C.recEdge, C.recInk],
-    via:    [C.recFill, C.recEdge, C.recInk],
-    rel:    [C.inner, C.innerEdge, C.mut],
-    tag:    [C.inner, C.innerEdge, C.peri],
-  }[kind] || [C.inner, C.innerEdge, C.mut];
-  return rect(x, y, w, 20, { fill: style[0], stroke: style[1], r: 6, op })
-    + text(x + w / 2, y + 14, label, { fill: style[2], size: 12, anchor: "middle", op });
+  const st = kind === "rec" ? [C.recFill, C.recEdge, C.recInk] : [C.inner, C.innerEdge, C.mut];
+  return R(x, y, w, 19, { fill: st[0], stroke: st[1], r: 6, op }) + T(x + w / 2, y + 13.5, label, { fill: st[2], size: 11, anchor: "middle", op });
 }
-function scorePill(x, y, pct, op = 1, tone = C.peri) {
-  const w = 44;
-  return rect(x, y, w, 22, { fill: tone, stroke: null, r: 11, op })
-    + text(x + w / 2, y + 15.5, `${Math.round(pct)}%`, { fill: "#15151b", size: 12.5, weight: 600, anchor: "middle", op });
-}
-// Caption strip common to every scene, so the eye has one fixed place to read.
-function caption(head, sub, op) {
-  return text(40, 52, head, { size: 30, weight: 600, ls: -0.4, op })
-    + text(40, 78, sub, { fill: C.mut, size: 15, op: op * 0.95 });
-}
-
-// ---------------------------------------------------------------- scenes
-function sceneTitle(t, d) {
-  const a = ease(t / 0.9);
-  const b = ease((t - 0.5) / 1.0);
-  const out = t > d - 0.4 ? 1 - ease((t - (d - 0.4)) / 0.4) : 1;
-  let s = "";
-  // wordmark spark
-  const cx = 92, cy = 268;
-  s += `<g opacity="${(a * out).toFixed(3)}"><path d="M ${cx} ${cy - 16} L ${cx + 5} ${cy - 5} L ${cx + 16} ${cy} L ${cx + 5} ${cy + 5} L ${cx} ${cy + 16} L ${cx - 5} ${cy + 5} L ${cx - 16} ${cy} L ${cx - 5} ${cy - 5} Z" fill="${C.peri}"/></g>`;
-  s += text(124, cy + 14, "Smart Related Notes", { size: 52, weight: 600, ls: -1.2, op: a * out });
-  s += text(126, cy + 58, "3.0", { size: 26, weight: 600, fill: C.green, op: b * out });
-  s += text(126 + 56, cy + 58, "ranking stopped being about wording alone", { size: 20, fill: C.mut, op: b * out });
+function card(i, k, op) {
+  if (k <= 0.004) return "";
+  const c = CARDS[i];
+  const y = WIN.y + 104 + i * 74 + (1 - k) * 14;
+  const x = WIN.pn.x + 14, w = WIN.pn.w - 28;
+  let s = R(x, y, w, 62, { fill: C.inner, stroke: C.innerEdge, r: 9, op });
+  s += T(x + 16, y + 24, c.t, { fill: C.body, size: 13.5, weight: 500, op });
+  s += R(x + w - 56, y + 11, 42, 20, { fill: c.pct >= 30 ? C.peri : C.innerEdge, r: 10, op });
+  s += T(x + w - 35, y + 25, `${c.pct}%`, { fill: "#15151b", size: 11.5, weight: 600, anchor: "middle", op });
+  s += pill(x + 16, y + 34, c.pills[0][0], c.pills[0][1], op);
   return s;
 }
 
-function scenePanel(t, d) {
-  const intro = ease(t / 0.5);
-  const out = t > d - 0.4 ? 1 - ease((t - (d - 0.4)) / 0.4) : 1;
-  const A = intro * out;
-  let s = caption("The notes you would have linked", "Open a note. Every other note is ranked by meaning, on your machine.", A);
-  const px = 40, py = 108, pw = 420, ph = 448;
-  s += rect(px, py, pw, ph, { r: 14, op: A });
-  s += text(px + 18, py + 30, "Smart related notes", { size: 15, weight: 600, op: A });
-  s += text(px + 18, py + 50, "Based on Backprop als Feedback beim Schreiben", { fill: C.dim, size: 12, op: A });
-  let cy = py + 68;
-  for (let i = 0; i < CARDS.length; i++) {
-    const c = CARDS[i];
-    const start = 0.55 + i * 0.28;
-    const k = ease((t - start) / 0.55);
-    if (k <= 0.001) continue;
-    const dy = (1 - k) * 16;
-    const op = k * out;
-    s += rect(px + 14, cy + dy, pw - 28, 82, { fill: C.inner, stroke: C.innerEdge, r: 10, op });
-    s += text(px + 30, cy + dy + 24, c.t, { fill: C.body, size: 15, weight: 500, op });
-    s += scorePill(px + pw - 72, cy + dy + 10, c.pct, op, c.pct >= 30 ? C.peri : C.innerEdge);
-    let qx = px + 30;
-    for (const [label, kind] of c.pills) { s += pill(qx, cy + dy + 34, label, kind, op); qx += pillW(label) + 8; }
-    s += text(px + 30, cy + dy + 72, c.sub, { fill: C.dim, size: 11.5, op: op * 0.9 });
-    cy += 92;
-  }
-  // right-hand explainer
-  const e = ease((t - 1.6) / 0.8) * out;
-  s += text(px + pw + 40, py + 96, "Not folders. Not tags.", { size: 22, weight: 600, op: e });
-  s += text(px + pw + 40, py + 128, "A multilingual embedding model reads", { fill: C.mut, size: 15, op: e });
-  s += text(px + pw + 40, py + 150, "each note and places it by what it means,", { fill: C.mut, size: 15, op: e });
-  s += text(px + pw + 40, py + 172, "so a German note matches an English one.", { fill: C.mut, size: 15, op: e });
-  const e2 = ease((t - 2.6) / 0.8) * out;
-  s += rect(px + pw + 40, py + 200, 300, 64, { fill: C.recFill, stroke: C.recEdge, r: 10, op: e2 });
-  s += text(px + pw + 58, py + 228, "Runs entirely on your machine", { fill: C.recInk, size: 14, weight: 600, op: e2 });
-  s += text(px + pw + 58, py + 250, "No cloud, no API key, offline after setup", { fill: C.mut, size: 12.5, op: e2 });
+const cap = (s, op, sub) =>
+  T(W / 2, 42, s, { size: 23, weight: 600, anchor: "middle", ls: -0.3, op })
+  + (sub ? T(W / 2, 62, sub, { fill: C.dim, size: 13, anchor: "middle", op: op * 0.9 }) : "");
+
+// ------------------------------------------------------------------ scenes
+const SCENES = [
+  { id: "open",    dur: 1.5 },
+  { id: "embed",   dur: 4.6 },
+  { id: "rank",    dur: 3.3 },
+  { id: "graph",   dur: 4.1 },
+  { id: "decrowd", dur: 2.9 },
+  { id: "map",     dur: 3.4 },
+  { id: "outro",   dur: 1.6 },
+];
+const TOTAL = SCENES.reduce((a, s) => a + s.dur, 0);
+const OUTF = (t, d, f = 0.3) => (t > d - f ? 1 - ease((t - (d - f)) / f) : 1);
+
+// 1. the window opens and a note is there. no claims yet.
+function sOpen(t, d) {
+  const a = ease(t / 0.55), o = OUTF(t, d);
+  const A = a * o;
+  let s = cap("Open a note.", A * ease((t - 0.5) / 0.5));
+  s += windowChrome(A);
+  s += editorBody(A, { reveal: ease((t - 0.35) / 0.9) });
+  s += panelShell(A * ease((t - 0.7) / 0.5));
   return s;
 }
 
-function sceneGraph(t, d) {
-  const intro = ease(t / 0.5);
-  const out = t > d - 0.4 ? 1 - ease((t - (d - 0.4)) / 0.4) : 1;
-  const A = intro * out;
-  let s = caption("Now it reads your links, not just your words", "Two notes that never mention each other, connected through one you linked to both.", A);
-  const bx = 40, by = 112, bw = 700, bh = 300;
-  s += rect(bx, by, bw, bh, { r: 14, op: A });
+// 2. the fundamental step: words leave the note, a model turns them into ONE point,
+// and a note written in the other language lands next to it.
+const WORDS = ["gradient", "loss", "chain rule", "backprop"];
+const DEWORDS = ["Fehler", "rückwärts", "Kettenregel"];
+function sEmbed(t, d) {
+  const o = OUTF(t, d);
+  let s = cap("Each note becomes one point, by meaning.", o * ease(t / 0.4), "German and English land in the same place.");
+  s += windowChrome(o, {});
+  s += editorBody(o, { reveal: 1, dim: L(1, 0.45, ease((t - 0.9) / 0.8)) });
+  s += panelShell(o * 0.5);
 
-  const L = { x: bx + 130, y: by + 96 }, R = { x: bx + 570, y: by + 96 }, M = { x: bx + 350, y: by + 216 };
-  // the two notes
-  const nk = ease((t - 0.3) / 0.6) * out;
-  const nodeBox = (p, title, sub, op) =>
-    rect(p.x - 100, p.y - 34, 200, 62, { fill: C.inner, stroke: C.innerEdge, r: 10, op })
-    + text(p.x, p.y - 10, title, { fill: C.body, size: 14, weight: 600, anchor: "middle", op })
-    + text(p.x, p.y + 10, sub, { fill: C.dim, size: 11.5, anchor: "middle", op });
-  s += nodeBox(L, "Entropy", "information theory", nk);
-  s += nodeBox(R, "Hash Table", "data structures", nk);
+  // the field the points land in, overlaid on the panel side
+  const F = { x: WIN.pn.x + 22, y: WIN.y + 108, w: WIN.pn.w - 44, h: 300 };
+  const fk = ease((t - 0.5) / 0.5) * o;
+  s += R(F.x, F.y, F.w, F.h, { fill: C.card, stroke: C.cardEdge, r: 10, op: fk });
+  s += T(F.x + F.w / 2, F.y + F.h + 22, "meaning space", { fill: C.dim, size: 11.5, anchor: "middle", op: fk });
+  { let sd = 5; const rn = () => ((sd = (sd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+    for (let i = 0; i < 70; i++) s += DOT(F.x + 12 + rn() * (F.w - 24), F.y + 12 + rn() * (F.h - 24), 2.2, C.faint, fk * 0.8); }
 
-  // "no shared wording" crossed link
-  const xk = ease((t - 0.9) / 0.5) * out;
-  if (xk > 0.001) {
-    s += `<line x1="${L.x + 100}" y1="${L.y}" x2="${R.x - 100}" y2="${R.y}" stroke="${C.innerEdge}" stroke-width="1.5" stroke-dasharray="5 5" opacity="${(xk * out).toFixed(3)}"/>`;
-    const mx = (L.x + R.x) / 2;
-    s += text(mx, L.y - 12, "no wording in common", { fill: C.dim, size: 12, anchor: "middle", op: xk });
-    s += `<g opacity="${xk.toFixed(3)}"><line x1="${mx - 9}" y1="${L.y - 9}" x2="${mx + 9}" y2="${L.y + 9}" stroke="${C.rose}" stroke-width="2"/><line x1="${mx + 9}" y1="${L.y - 9}" x2="${mx - 9}" y2="${L.y + 9}" stroke="${C.rose}" stroke-width="2"/></g>`;
+  const model = { x: WIN.ed.x + WIN.ed.w - 6, y: WIN.y + 250 };
+  // word chips fly from the note into the model, then out as a single point
+  const target = { x: F.x + F.w * 0.42, y: F.y + F.h * 0.40 };
+  const de = { x: F.x + F.w * 0.52, y: F.y + F.h * 0.47 };
+
+  for (let i = 0; i < WORDS.length; i++) {
+    const st = 0.75 + i * 0.13;
+    const k = ease((t - st) / 0.7);
+    if (k <= 0.004 || k >= 1) continue;
+    const from = { x: WIN.ed.x + 60 + (i % 2) * 130, y: WIN.y + 140 + i * 34 };
+    const p = qbez(from, { x: (from.x + model.x) / 2, y: from.y - 46 }, model, k);
+    const w = pillW(WORDS[i]);
+    const op = (1 - k * k) * o;
+    s += R(p.x - w / 2, p.y - 10, w, 20, { fill: C.inner, stroke: C.innerEdge, r: 6, op })
+      + T(p.x, p.y + 4, WORDS[i], { fill: C.body, size: 11, anchor: "middle", op });
   }
-  // the bridging note and its two edges, drawn on
-  const bk = ease((t - 1.6) / 0.7) * out;
-  if (bk > 0.001) {
-    s += nodeBox(M, "Hash Function", "you linked both of these", bk);
-    const draw = (from, to, k) => {
-      const x2 = lerp(from.x, to.x, k), y2 = lerp(from.y, to.y, k);
-      return `<line x1="${from.x}" y1="${from.y}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${C.green}" stroke-width="2" opacity="${(0.85 * out).toFixed(3)}"/>`;
-    };
-    const ek = ease((t - 2.1) / 0.7);
-    if (ek > 0.001) {
-      s += draw({ x: M.x - 60, y: M.y - 34 }, { x: L.x, y: L.y + 28 }, ek);
-      s += draw({ x: M.x + 60, y: M.y - 34 }, { x: R.x, y: R.y + 28 }, ek);
+  // the model itself
+  const mk = ease((t - 0.7) / 0.4) * o;
+  s += R(model.x - 46, model.y - 26, 92, 52, { fill: C.inner, stroke: C.peri, r: 10, op: mk * 0.95 });
+  const pulse = 0.55 + 0.45 * Math.abs(Math.sin(t * 6));
+  s += T(model.x, model.y - 2, "embed", { fill: C.peri, size: 12.5, weight: 600, anchor: "middle", op: mk * pulse });
+  s += T(model.x, model.y + 15, "on your Mac", { fill: C.dim, size: 9.5, anchor: "middle", op: mk * 0.9 });
+
+  // english point flies out of the model and lands
+  const e1 = ease((t - 1.55) / 0.65);
+  if (e1 > 0.004) {
+    const p = qbez(model, { x: (model.x + target.x) / 2, y: model.y - 40 }, target, e1);
+    s += DOT(p.x, p.y, L(9, 6, e1), C.peri, o);
+    if (e1 >= 1) s += DOT(target.x, target.y, 6 + 10 * (1 - ease((t - 2.2) / 0.4)), C.peri, o * 0.25 * (1 - ease((t - 2.2) / 0.4)));
+  }
+  // then the german note does the same and lands right beside it
+  const gk = ease((t - 2.35) / 0.4) * o;
+  if (gk > 0.004) {
+    s += R(WIN.ed.x + 40, WIN.y + 330, 210, 74, { fill: C.inner, stroke: C.innerEdge, r: 9, op: gk });
+    s += T(WIN.ed.x + 56, WIN.y + 354, "2026-02-07", { fill: C.body, size: 12.5, weight: 600, op: gk });
+    for (let i = 0; i < DEWORDS.length; i++) {
+      const st = 2.6 + i * 0.1, k = ease((t - st) / 0.6);
+      if (k <= 0.004 || k >= 1) continue;
+      const from = { x: WIN.ed.x + 66 + i * 52, y: WIN.y + 378 };
+      const p = qbez(from, { x: (from.x + model.x) / 2, y: from.y - 40 }, model, k);
+      const w = pillW(DEWORDS[i]);
+      s += R(p.x - w / 2, p.y - 9, w, 18, { fill: C.inner, stroke: C.gold, r: 6, op: (1 - k * k) * o })
+        + T(p.x, p.y + 4, DEWORDS[i], { fill: C.gold, size: 10.5, anchor: "middle", op: (1 - k * k) * o });
     }
   }
-  // the receipt card
-  const rk = ease((t - 3.0) / 0.7) * out;
-  if (rk > 0.001) {
-    const cx = bx + bw + 40;
-    s += text(cx, by + 40, "So the panel offers it,", { size: 20, weight: 600, op: rk });
-    s += text(cx, by + 66, "and says why:", { size: 20, weight: 600, op: rk });
-    s += rect(cx, by + 92, 340, 78, { fill: C.inner, stroke: C.innerEdge, r: 10, op: rk });
-    s += text(cx + 18, by + 122, "Hash Table", { fill: C.body, size: 15, weight: 500, op: rk });
-    s += scorePill(cx + 340 - 62, by + 106, 12, rk, C.innerEdge);
-    s += pill(cx + 18, by + 136, "via Hash Function", "via", rk);
-    const mk = ease((t - 3.7) / 0.7) * out;
-    s += text(cx, by + 200, "Held-out link recall", { fill: C.mut, size: 13, op: mk });
-    s += text(cx, by + 238, "0.75", { fill: C.green, size: 40, weight: 600, op: mk });
-    s += text(cx + 92, by + 238, "from 0.66", { fill: C.dim, size: 18, op: mk });
+  const e2 = ease((t - 3.3) / 0.6);
+  if (e2 > 0.004) {
+    const p = qbez(model, { x: (model.x + de.x) / 2, y: model.y - 34 }, de, e2);
+    s += DOT(p.x, p.y, L(9, 6, e2), C.gold, o);
+  }
+  // the punchline: they are neighbours
+  const nk = ease((t - 3.95) / 0.45) * o;
+  if (nk > 0.004) {
+    s += LINE(target.x, target.y, de.x, de.y, C.green, nk * 0.9, 2);
+    s += T((target.x + de.x) / 2 + 34, (target.y + de.y) / 2 + 4, "same idea", { fill: C.recInk, size: 11, op: nk });
   }
   return s;
 }
 
-function sceneDecrowd(t, d) {
-  const intro = ease(t / 0.5);
-  const out = t > d - 0.4 ? 1 - ease((t - (d - 0.4)) / 0.4) : 1;
-  const A = intro * out;
-  let s = caption("Notes from one template stop matching only each other", "A daily note used to return ten more daily notes. The shared skeleton is subtracted in vector space.", A);
-  const bx = 40, by = 128, bw = 1120, bh = 300;
-  s += rect(bx, by, bw, bh, { r: 14, op: A });
-  // ten slots; the "before" row is all template, the "after" row mostly content
-  const slot = (i, on, op, y) => {
-    const x = bx + 60 + i * 100;
-    return rect(x, y, 84, 56, { fill: on ? C.recFill : C.inner, stroke: on ? C.recEdge : C.innerEdge, r: 8, op })
-      + text(x + 42, y + 33, on ? "daily" : "content", { fill: on ? C.recInk : C.dim, size: 12, anchor: "middle", op });
-  };
-  const k1 = ease((t - 0.3) / 0.6) * out;
-  s += text(bx + 60, by + 40, "before", { fill: C.mut, size: 13, op: k1 });
-  for (let i = 0; i < 10; i++) s += slot(i, true, k1 * ease((t - 0.3 - i * 0.03) / 0.5), by + 56);
-  const k2 = ease((t - 1.5) / 0.8) * out;
-  s += text(bx + 60, by + 172, "after", { fill: C.mut, size: 13, op: k2 });
-  // 3.35 of 10 rounds to three template slots surviving
-  for (let i = 0; i < 10; i++) s += slot(i, i < 3, k2 * ease((t - 1.5 - i * 0.03) / 0.5), by + 188);
-  const k3 = ease((t - 1.5) / 0.6) * out;
-  const val = lerp(8.2, 3.4, easeInOut(clamp01((t - 1.5) / 0.85)));
-  s += text(bx + 60, by + 282, `crowding ${val.toFixed(1)} of 10`, { fill: C.green, size: 17, weight: 600, op: k3 });
-  s += text(bx + 260, by + 282, "measured through the ranker itself, from 8.2", { fill: C.dim, size: 13, op: k3 });
+// 3. geometry becomes the panel: nearest points light up, then become cards.
+function sRank(t, d) {
+  const o = OUTF(t, d);
+  let s = cap("The nearest points are the related notes.", o * ease(t / 0.35));
+  s += windowChrome(o);
+  s += panelShell(o);
+
+  const F = { x: WIN.ed.x + 26, y: WIN.y + 70, w: WIN.ed.w - 52, h: WIN.h - 108 };
+  const fade = o;
+  const me = { x: F.x + F.w * 0.42, y: F.y + F.h * 0.40 };
+  if (fade > 0.004) {
+    s += R(F.x, F.y, F.w, F.h, { fill: C.card, stroke: C.cardEdge, r: 10, op: fade * o });
+    // a cloud of other notes, with the four nearest picked out
+    const near = [[0.56, 0.44], [0.34, 0.30], [0.62, 0.62], [0.30, 0.58]];
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+    for (let i = 0; i < 150; i++) {
+      const px = F.x + 14 + rnd() * (F.w - 28), py = F.y + 14 + rnd() * (F.h - 28);
+      s += DOT(px, py, 2.4, C.faint, fade * 0.8);
+    }
+    const rk = ease((t - 0.3) / 0.7);
+    for (let i = 0; i < near.length; i++) {
+      const p = { x: F.x + F.w * near[i][0], y: F.y + F.h * near[i][1] };
+      const k = ease((t - 0.35 - i * 0.1) / 0.5);
+      s += LINE(me.x, me.y, L(me.x, p.x, k), L(me.y, p.y, k), C.peri, fade * o * 0.55, 1.2);
+      s += DOT(p.x, p.y, 5 * k, i === 0 ? C.gold : C.peri, fade * o);
+    }
+    // ring pulse on the active note
+    const pr = ((t * 0.9) % 1);
+    s += `<circle cx="${me.x.toFixed(1)}" cy="${me.y.toFixed(1)}" r="${(8 + pr * 26).toFixed(1)}" fill="none" stroke="${C.peri}" stroke-width="1.5" opacity="${(fade * o * 0.4 * (1 - pr)).toFixed(3)}"/>`;
+    s += DOT(me.x, me.y, 7, C.peri, fade * o);
+    void rk;
+  }
+  for (let i = 0; i < CARDS.length; i++) s += card(i, ease((t - 1.7 - i * 0.14) / 0.5), o);
   return s;
 }
 
-function sceneMap(t, d, map) {
-  const intro = ease(t / 0.5);
-  const out = t > d - 0.4 ? 1 - ease((t - (d - 0.4)) / 0.4) : 1;
-  const A = intro * out;
-  let s = caption("And a map of the whole vault", "Every note a point. Nothing was tagged or foldered: the positions and the cluster names come out of the notes.", A);
-  const bx = 40, by = 112, bw = 760, bh = 452;
-  s += rect(bx, by, bw, bh, { r: 14, op: A });
+// 4. the link graph: two notes with nothing in common, joined through a third.
+function sGraph(t, d) {
+  const o = OUTF(t, d);
+  let s = cap("Your links see what wording cannot.", o * ease(t / 0.35), "recall 0.66 → 0.75 on held-out links");
+  s += windowChrome(o);
+  s += panelShell(o);
+  s += editorBody(o * (1 - ease((t - 0.2) / 0.4)), { reveal: 1, dim: 0.4 });
+
+  const G = { x: WIN.ed.x + 26, y: WIN.y + 70, w: WIN.ed.w - 52, h: WIN.h - 108 };
+  const gk = ease((t - 0.3) / 0.5) * o;
+  s += R(G.x, G.y, G.w, G.h, { fill: C.card, stroke: C.cardEdge, r: 10, op: gk });
+
+  const A = { x: G.x + G.w * 0.22, y: G.y + G.h * 0.28 };
+  const B = { x: G.x + G.w * 0.78, y: G.y + G.h * 0.30 };
+  const M = { x: G.x + G.w * 0.50, y: G.y + G.h * 0.72 };
+  const node = (p, label, sub, k, tone) => {
+    if (k <= 0.004) return "";
+    const w = 150, h = 46, r = back(k);
+    return R(p.x - w / 2 * r, p.y - h / 2 * r, w * r, h * r, { fill: C.inner, stroke: tone, r: 9, op: k * o })
+      + T(p.x, p.y - 2, label, { fill: C.body, size: 12.5, weight: 600, anchor: "middle", op: k * o })
+      + T(p.x, p.y + 14, sub, { fill: C.dim, size: 10, anchor: "middle", op: k * o });
+  };
+  s += node(A, "Entropy", "information theory", ease((t - 0.55) / 0.4), C.innerEdge);
+  s += node(B, "Hash Table", "data structures", ease((t - 0.7) / 0.4), C.innerEdge);
+
+  // no shared wording
+  const xk = ease((t - 1.15) / 0.4) * o;
+  if (xk > 0.004) {
+    s += LINE(A.x + 78, A.y, B.x - 78, B.y, C.innerEdge, xk * 0.9, 1.5, "5 5");
+    const mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2;
+    s += LINE(mx - 8, my - 8, mx + 8, my + 8, C.rose, xk, 2.2);
+    s += LINE(mx + 8, my - 8, mx - 8, my + 8, C.rose, xk, 2.2);
+    s += T(mx, my - 20, "no words in common", { fill: C.dim, size: 11, anchor: "middle", op: xk });
+  }
+  // the bridge you built
+  s += node(M, "Hash Function", "you linked both", ease((t - 1.75) / 0.4), C.recEdge);
+  const ek = ease((t - 2.1) / 0.6);
+  if (ek > 0.004) {
+    s += LINE(M.x - 52, M.y - 20, L(M.x - 52, A.x, ek), L(M.y - 20, A.y + 24, ek), C.green, o * 0.95, 2.2);
+    s += LINE(M.x + 52, M.y - 20, L(M.x + 52, B.x, ek), L(M.y - 20, B.y + 24, ek), C.green, o * 0.95, 2.2);
+  }
+  // the receipt lands in the panel
+  const ck = ease((t - 2.8) / 0.5);
+  if (ck > 0.004) {
+    const x = WIN.pn.x + 14, w = WIN.pn.w - 28, y = WIN.y + 104 + (1 - ck) * 14;
+    s += R(x, y, w, 62, { fill: C.inner, stroke: C.recEdge, r: 9, op: ck * o });
+    s += T(x + 16, y + 24, "Hash Table", { fill: C.body, size: 13.5, weight: 500, op: ck * o });
+    s += R(x + w - 56, y + 11, 42, 20, { fill: C.innerEdge, r: 10, op: ck * o });
+    s += T(x + w - 35, y + 25, "12%", { fill: C.body, size: 11.5, weight: 600, anchor: "middle", op: ck * o });
+    s += pill(x + 16, y + 34, "via Hash Function", "rec", ck * o);
+  }
+  return s;
+}
+
+// 5. de-crowding, shown as geometry: identical template notes pile onto one spot,
+// then the shared direction is removed and they spread out.
+function sDecrowd(t, d) {
+  const o = OUTF(t, d);
+  let s = cap("Notes from one template stop hiding each other.", o * ease(t / 0.35));
+  s += windowChrome(o);
+  s += panelShell(o * 0.4);
+  const G = { x: WIN.ed.x + 26, y: WIN.y + 70, w: WIN.ed.w - 52, h: WIN.h - 108 };
+  s += R(G.x, G.y, G.w, G.h, { fill: C.card, stroke: C.cardEdge, r: 10, op: o });
+
+  const cxp = G.x + G.w * 0.5, cyp = G.y + G.h * 0.46;
+  const k = easeIO(cl((t - 0.85) / 1.15));
+  let seed = 31;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  for (let i = 0; i < 22; i++) {
+    const ang = rnd() * Math.PI * 2, rad = 46 + rnd() * 150;
+    // clumped at the centre before, spread over the field after
+    const x = L(cxp + Math.cos(ang) * 7, cxp + Math.cos(ang) * rad, k);
+    const y = L(cyp + Math.sin(ang) * 6, cyp + Math.sin(ang) * rad * 0.6, k);
+    s += DOT(x, y, 7, C.recInk, o * L(0.4, 0.95, k));
+  }
+  // the direction being subtracted
+  const ak = ease((t - 0.85) / 0.5) * (1 - ease((t - 1.9) / 0.4)) * o;
+  if (ak > 0.004) {
+    s += LINE(cxp - 96, cyp + 96, cxp + 96, cyp - 96, C.rose, ak, 2, "6 5");
+    s += T(cxp + 112, cyp - 100, "shared template direction, removed", { fill: C.rose, size: 11, anchor: "end", op: ak });
+  }
+  const val = L(8.2, 3.4, k);
+  s += T(G.x + G.w / 2, G.y + G.h - 22, `${val.toFixed(1)} of a daily note's top 10 were other daily notes`, {
+    fill: k > 0.5 ? C.recInk : C.mut, size: 13, anchor: "middle", op: o,
+  });
+  return s;
+}
+
+// 6. pull back: the whole vault, real points, clustered and named.
+function sMap(t, d, map) {
+  const o = OUTF(t, d);
+  let s = cap("Then step back and see the whole vault.", o * ease(t / 0.35));
+  s += windowChrome(o);
+  s += panelShell(o * 0.35);
+  const G = { x: WIN.ed.x + 26, y: WIN.y + 70, w: WIN.ed.w - 52, h: WIN.h - 108 };
+  s += R(G.x, G.y, G.w, G.h, { fill: C.card, stroke: C.cardEdge, r: 10, op: o });
   const COL = [C.green, C.peri, C.gold, C.cyan, C.grey, C.rose];
   const { pts, xr, yr } = map;
-  const sx = (x) => bx + 20 + (x - xr[0]) / (xr[1] - xr[0]) * (bw - 40);
-  const sy = (y) => by + 20 + (1 - (y - yr[0]) / (yr[1] - yr[0])) * (bh - 40);
+  const sx = (x) => G.x + 16 + (x - xr[0]) / (xr[1] - xr[0]) * (G.w - 32);
+  const sy = (y) => G.y + 16 + (1 - (y - yr[0]) / (yr[1] - yr[0])) * (G.h - 32);
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
-    // points arrive in a wave ordered by cluster, so the grouping reveals itself
-    const k = ease((t - 0.4 - p.k * 0.16 - (i % 40) * 0.004) / 0.5);
-    if (k <= 0.001) continue;
-    s += `<circle cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="${(3 * k).toFixed(2)}" fill="${COL[p.k % 6]}" opacity="${(0.66 * k * out).toFixed(3)}"/>`;
+    // points arrive cluster by cluster, so the grouping assembles itself
+    const k = ease((t - 0.35 - p.k * 0.13 - (i % 30) * 0.003) / 0.4);
+    if (k <= 0.004) continue;
+    s += DOT(sx(p.x), sy(p.y), 2.7 * k, COL[p.k % 6], 0.72 * k * o);
   }
-  const lx = bx + bw + 28;
-  s += text(lx, by + 28, "CLUSTERS THE PLUGIN FOUND AND NAMED", { fill: C.dim, size: 12, op: A });
-  let ly = by + 60;
-  for (const l of map.legend) {
-    const k = ease((t - 0.9 - l.k * 0.16) / 0.5) * out;
-    s += `<circle cx="${lx + 7}" cy="${ly - 5}" r="5" fill="${COL[l.k % 6]}" opacity="${k.toFixed(3)}"/>`;
-    s += text(lx + 22, ly, l.name, { fill: C.body, size: 14, op: k });
-    s += text(lx + 22, ly + 17, `${l.n} notes`, { fill: C.dim, size: 12, op: k });
-    ly += 46;
+  // names appear in the panel as each cluster finishes
+  let ly = WIN.y + 112;
+  for (let li = 0; li < map.legend.length; li++) {
+    const l = map.legend[li];
+    const k = ease((t - 0.7 - li * 0.12) / 0.4) * o;
+    s += DOT(WIN.pn.x + 26, ly - 4, 4.5, COL[l.k % 6], k);
+    s += T(WIN.pn.x + 40, ly, l.name, { fill: C.body, size: 12.5, op: k });
+    s += T(WIN.pn.x + 40, ly + 15, `${l.n} notes`, { fill: C.dim, size: 10.5, op: k });
+    ly += 40;
   }
   return s;
 }
 
-function sceneOutro(t, d) {
-  const a = ease(t / 0.6);
-  const out = t > d - 0.5 ? 1 - ease((t - (d - 0.5)) / 0.5) : 1;
-  const A = a * out;
-  let s = text(W / 2, 250, "Smart Related Notes 3.0", { size: 40, weight: 600, anchor: "middle", ls: -0.8, op: A });
-  const b = ease((t - 0.4) / 0.6) * out;
-  s += text(W / 2, 296, "Community plugins  ›  Browse  ›  Smart Related Notes", { fill: C.mut, size: 18, anchor: "middle", op: b });
-  const c = ease((t - 0.8) / 0.6) * out;
-  s += rect(W / 2 - 210, 330, 420, 44, { fill: C.recFill, stroke: C.recEdge, r: 10, op: c });
-  s += text(W / 2, 358, "Local, offline, and measured before it ships", { fill: C.recInk, size: 15, anchor: "middle", op: c });
+function sOutro(t, d) {
+  const a = ease(t / 0.45), o = OUTF(t, d, 0.35);
+  const A = a * o;
+  let s = T(W / 2 - 34, 268, "Smart Related Notes", { size: 42, weight: 600, anchor: "middle", ls: -1, op: A });
+  s += T(W / 2 + 236, 268, "3.0", { size: 42, weight: 600, anchor: "middle", fill: C.green, op: A });
+  const b = ease((t - 0.35) / 0.45) * o;
+  s += T(W / 2, 308, "Community plugins  ›  Browse  ›  Smart Related Notes", { fill: C.mut, size: 16, anchor: "middle", op: b });
+  const c = ease((t - 0.6) / 0.45) * o;
+  s += R(W / 2 - 176, 336, 352, 40, { fill: C.recFill, stroke: C.recEdge, r: 10, op: c });
+  s += T(W / 2, 362, "Local, offline, and measured before it ships", { fill: C.recInk, size: 14, anchor: "middle", op: c });
   return s;
 }
 
-// ---------------------------------------------------------------- driver
+// ------------------------------------------------------------------ driver
 let map = { pts: [], legend: [], xr: [-1, 1], yr: [-1, 1] };
 if (MAPDATA) {
   const raw = JSON.parse(readFileSync(MAPDATA, "utf8"));
@@ -295,20 +443,19 @@ if (MAPDATA) {
 const total = Math.round(TOTAL * FPS);
 let n = 0;
 for (const sc of SCENES) {
-  const frames = Math.round(sc.dur * FPS);
-  for (let f = 0; f < frames; f++) {
+  for (let f = 0; f < Math.round(sc.dur * FPS); f++) {
     const t = f / FPS;
-    let body = "";
-    if (sc.id === "title") body = sceneTitle(t, sc.dur);
-    else if (sc.id === "panel") body = scenePanel(t, sc.dur);
-    else if (sc.id === "graph") body = sceneGraph(t, sc.dur);
-    else if (sc.id === "decrowd") body = sceneDecrowd(t, sc.dur);
-    else if (sc.id === "map") body = sceneMap(t, sc.dur, map);
-    else if (sc.id === "outro") body = sceneOutro(t, sc.dur);
-    // progress hairline, so the viewer can see how long is left
-    const prog = n / total;
-    body += rect(0, H - 3, W * prog, 3, { fill: C.green, stroke: null, r: 0, op: 0.75 });
-    writeFileSync(join(OUT, `f${String(n).padStart(5, "0")}.svg`), frameOpen() + body + frameClose());
+    let b = "";
+    if (sc.id === "open") b = sOpen(t, sc.dur);
+    else if (sc.id === "embed") b = sEmbed(t, sc.dur);
+    else if (sc.id === "rank") b = sRank(t, sc.dur);
+    else if (sc.id === "graph") b = sGraph(t, sc.dur);
+    else if (sc.id === "decrowd") b = sDecrowd(t, sc.dur);
+    else if (sc.id === "map") b = sMap(t, sc.dur, map);
+    else if (sc.id === "outro") b = sOutro(t, sc.dur);
+    b += R(0, H - 3, W * (n / total), 3, { fill: C.green, r: 0, op: 0.7 });
+    writeFileSync(join(OUT, `f${String(n).padStart(5, "0")}.svg`),
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" font-family="${FONT}"><rect width="${W}" height="${H}" fill="${C.page}"/>${b}</svg>`);
     n++;
   }
 }
