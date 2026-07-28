@@ -79,6 +79,7 @@ function rng(seed) { let s = seed; return () => ((s = (s * 1103515245 + 12345) &
 // Caption track. Lines cross-dissolve in place, so the top of the frame narrates
 // continuously instead of one label sitting there for the whole scene.
 const IN_T = 0.34, OUT_T = 0.28;
+let CAPBUF = "";
 function says(t, beats) {
   let s = "";
   for (let i = 0; i < beats.length; i++) {
@@ -92,7 +93,8 @@ function says(t, beats) {
     s += T(W / 2, 40 + dy, b.head, { size: 31, weight: 600, anchor: "middle", ls: -0.4, op });
     if (b.sub) s += T(W / 2, 66 + dy, b.sub, { fill: C.mut, size: 16.5, anchor: "middle", op: op * 0.92 });
   }
-  return s;
+  CAPBUF = s;
+  return "";
 }
 
 // ------------------------------------------------------------------ the window
@@ -495,7 +497,9 @@ for (let n = 0; n < total; n++) {
       a = Math.min(a, easeIO(1 - u)); bl = Math.max(bl, BLUR * u);
     }
     if (a <= 0.004) continue;
-    layers.push({ i, body: DRAW[sc.id](t, map), a, bl });
+    CAPBUF = "";
+    const body = DRAW[sc.id](t, map);
+    layers.push({ i, body, cap: CAPBUF, a, bl });
   }
   let defs = CLIP, g = "";
   for (const l of layers) {
@@ -506,6 +510,13 @@ for (let n = 0; n < total; n++) {
       f = ` filter="url(#${id})"`;
     }
     g += `<g opacity="${l.a.toFixed(3)}"${f}>${l.body}</g>`;
+  }
+  // Only the dominant scene's caption is drawn, and it dips out across the handover,
+  // so two headlines can never share the frame and none of them is ever blurred.
+  if (layers.length) {
+    const dom = layers.reduce((a, b) => (b.a > a.a ? b : a), layers[0]);
+    const capOp = easeIO(cl((dom.a - 0.52) / 0.34));
+    if (dom.cap && capOp > 0.004) g += `<g opacity="${capOp.toFixed(3)}">${dom.cap}</g>`;
   }
   g += R(46, H - 16, W - 92, 4, { fill: C.faint, r: 2, op: 0.55 });
   g += R(46, H - 16, (W - 92) * (n / total), 4, { fill: C.green, r: 2, op: 0.95 });
