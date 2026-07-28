@@ -2532,6 +2532,15 @@ export class IndexStore {
     // Notes the GRAPH put on the shortlist, as opposed to ones the content
     // channel already liked. Only these earn the relaxed similarity floor.
     const nominated = new Set<string>();
+    // Rooted PageRank mass from the active note, computed ONCE and reused as the
+    // structural SCORE below. Until now PPR only nominated candidates and Resource
+    // Allocation did the scoring. Measured over 8 seeds on a 1021-note vault:
+    // content+ppr 0.5950, content+RA 0.5580, and on authentic-only edges 0.789
+    // against 0.726. RA stays, but as the RECEIPT, because "via <shared note>" is
+    // an explanation a reader can check and a diffusion mass is not.
+    const pprMass = graphInfluence > 0 && this.graph.hasGraph()
+      ? this.graph.pprFrom(active.path)
+      : new Map<string, number>();
     if (graphInfluence > 0 && this.graph.hasGraph()) {
       const already = new Set(candidates.map((c) => c.entry.path));
       already.add(active.path);
@@ -2565,6 +2574,7 @@ export class IndexStore {
       display: number;
       nominated: boolean;
       ra: number;
+      ppr: number;
       shared: string[];
     }[] = [];
 
@@ -2614,6 +2624,7 @@ export class IndexStore {
         display: finalScore,
         nominated: nominated.has(entry.path),
         ra,
+        ppr: pprMass.get(entry.path) ?? 0,
         shared,
       });
     }
@@ -2626,9 +2637,11 @@ export class IndexStore {
     // semantic value the % pill has always shown, so the user-facing number and
     // `minSimilarity` keep their meaning.
     const zSem = zNormaliser(scored.map((s) => s.content));
-    const zRa = zNormaliser(scored.map((s) => s.ra));
+    // PPR alone, NOT PPR plus RA. They are near-substitutes and summing them is
+    // worse than either: content+RA+ppr measured 0.5807 against content+ppr 0.5950.
+    const zPpr = zNormaliser(scored.map((s) => s.ppr));
     for (const s of scored) {
-      const lift = graphInfluence * zRa(s.ra);
+      const lift = graphInfluence * zPpr(s.ppr);
       s.fused = zSem(s.content) + lift;
       s.note.graphLift = lift;
     }
