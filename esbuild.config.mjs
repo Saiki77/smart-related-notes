@@ -93,6 +93,26 @@ const inlineWorkerPlugin = {
   },
 };
 
+// The reader engine bundle: node-llama-cpp + our entry, as ONE self-contained
+// ESM file shipped in the release next to main.js. It is ESM (node-llama-cpp
+// uses top-level await, so CJS is impossible) and loaded at runtime via a real
+// dynamic import(); llama/ data and bins/ binaries are fetched separately at
+// first enable and land beside it (see src/reader/reader-assets.ts).
+await esbuild.build({
+  entryPoints: ["src/reader/engine-entry.mjs"],
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "es2022",
+  outfile: "reader-bundle.mjs",
+  external: ["@node-llama-cpp/*", "@reflink/*"],
+  banner: {
+    js: "import { createRequire as __nlcRequire } from 'node:module'; const require = __nlcRequire(import.meta.url);",
+  },
+  minify: prod,
+  logLevel: "info",
+});
+
 const ctx = await esbuild.context({
   entryPoints: ["src/main.ts"],
   bundle: true,

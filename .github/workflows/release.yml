@@ -75,6 +75,7 @@ jobs:
             main.js
             manifest.json
             styles.css
+            reader-bundle.mjs
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -83,8 +84,10 @@ jobs:
           name: ${{ github.ref_name }}
           body_path: release-notes.md
           draft: false
-          prerelease: false
+          # Semver prerelease tags (4.0.0-beta.1) publish as GitHub prereleases.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             main.js
             manifest.json
             styles.css
+            reader-bundle.mjs

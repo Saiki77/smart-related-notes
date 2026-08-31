@@ -554,3 +554,38 @@
   border-bottom: 1px dotted var(--text-faint);
   cursor: help;
 }
+
+/* Reader (4.0): ghost tag chips above the list. Quiet by design — dashed,
+   muted, and gone the moment they're used or dismissed. */
+.rn-tagchips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 2px 8px;
+  font-size: var(--font-ui-smaller);
+}
+.rn-tagchips-label {
+  color: var(--text-faint);
+}
+.rn-chip {
+  border: 1px dashed var(--background-modifier-border-hover);
+  border-radius: var(--radius-s);
+  padding: 0 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.rn-chip:hover {
+  color: var(--text-normal);
+  border-color: var(--text-faint);
+}
+.rn-chip-x {
+  color: var(--text-faint);
+  padding-left: 2px;
+}
+.rn-chip-x:hover {
+  color: var(--text-normal);
+}

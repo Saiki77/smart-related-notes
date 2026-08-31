@@ -204,6 +204,8 @@ export class RelatedNotesView extends ItemView {
     this.subtitleEl.appendText("Based on ");
     this.subtitleEl.createSpan({ cls: "rn-based-on", text: active.basename });
 
+    this.renderTagChips(active);
+
     const ranked = this.plugin.store.rank(active);
     if (ranked.length === 0) {
       const status = this.plugin.store.getProgress().status;
@@ -224,6 +226,39 @@ export class RelatedNotesView extends ItemView {
 
   private renderEmpty(text: string): void {
     this.listEl.createDiv({ cls: "rn-empty", text });
+  }
+
+  // Ghost tag chips: reader-verified suggestions for the active note. One
+  // click writes the tag into frontmatter; the small x dismisses it for good.
+  private renderTagChips(active: TFile): void {
+    if (!this.plugin.settings.readerSuggestTags) return;
+    const tags = this.plugin.reader?.suggestedTags(active.path) ?? [];
+    if (tags.length === 0) return;
+    const row = this.listEl.createDiv({ cls: "rn-tagchips" });
+    row.createSpan({ cls: "rn-tagchips-label", text: "Suggested:" });
+    for (const tag of tags) {
+      const chip = row.createSpan({ cls: "rn-chip" });
+      chip.createSpan({ text: `#${tag}` });
+      chip.setAttr("aria-label", `Add #${tag} to this note`);
+      chip.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void this.app.fileManager.processFrontMatter(active, (fm: Record<string, unknown>) => {
+          const cur = fm.tags;
+          const list = Array.isArray(cur) ? cur : typeof cur === "string" && cur.length > 0 ? [cur] : [];
+          if (!list.map(String).map((t) => t.toLowerCase()).includes(tag)) list.push(tag);
+          fm.tags = list;
+        });
+        this.plugin.reader?.dismissTag(active.path, tag);
+        this.requestRender();
+      });
+      const x = chip.createSpan({ cls: "rn-chip-x", text: "×" });
+      x.setAttr("aria-label", `Dismiss #${tag}`);
+      x.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.plugin.reader?.dismissTag(active.path, tag);
+        this.requestRender();
+      });
+    }
   }
 
   private toggleSearch(): void {
@@ -445,12 +480,18 @@ export class RelatedNotesView extends ItemView {
       card.createDiv({ cls: "rn-path", text: parentPath });
     }
 
-    // Topic-label summary line (preferred) with the snippet as a graceful fallback.
+    // Summary line: the reader's one-liner when it has read this note, else the
+    // keyphrase label, else the snippet. The gist rides along as a hover title.
     if (this.plugin.settings.showSummary) {
-      const summary = this.plugin.store.getSummary(item.file);
+      const one = this.plugin.settings.readerOneLiners
+        ? this.plugin.reader?.oneLiner(item.file.path) ?? null
+        : null;
+      const summary = one ?? this.plugin.store.getSummary(item.file);
       const line = summary.length > 0 ? summary : this.plugin.getSnippet(item.file);
       if (line.length > 0) {
-        card.createDiv({ cls: "rn-snippet", text: line });
+        const el = card.createDiv({ cls: "rn-snippet", text: line });
+        const gist = one ? this.plugin.reader?.gist(item.file.path) : null;
+        if (gist) el.setAttr("title", gist);
       }
     } else if (this.plugin.settings.showSnippet) {
       const snippet = this.plugin.getSnippet(item.file);

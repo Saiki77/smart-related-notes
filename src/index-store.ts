@@ -1559,7 +1559,8 @@ export class IndexStore {
   }
 
   // --- file selection --------------------------------------------------------
-  private isExcluded(path: string): boolean {
+  // Public: the reader service respects the same exclusions as the index.
+  isExcluded(path: string): boolean {
     return this.options.excludeFolders.some((folder) => {
       const f = folder.replace(/\/+$/, "");
       if (f.length === 0) return false;

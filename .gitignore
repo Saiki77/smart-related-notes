@@ -15,3 +15,4 @@ data.json
 # CC-BY-SA frequency lists, pulled for a feature that is not built yet.
 # They need attribution before they can ship, so they stay out of the tree.
 bench/data/
+reader-bundle.mjs

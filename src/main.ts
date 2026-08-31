@@ -14,9 +14,12 @@ import {
   normalizePath,
   requestUrl,
   debounce,
+  getAllTags,
   type Editor,
   type Debouncer,
 } from "obsidian";
+import { ReaderService, type ReaderHost, type ReaderPace } from "./reader/reader-service";
+import { RUNGS, removeAssets, assetSizesMb, type RungSpec } from "./reader/reader-assets";
 import {
   EmbeddingEngine,
   setOrtAssetLoader,
@@ -111,6 +114,12 @@ export interface RelatedNotesSettings {
   suggesterTakeOverUserSet: boolean;
   suggestNewNotes: boolean; // propose "create new note" rows
   newNoteMinSimilarity: number; // confidence floor for a new-note proposal
+  // --- reader (4.0, beta) ---
+  readerEnabled: boolean; // master toggle; enabling starts the asset download
+  readerRung: "auto" | RungSpec["id"]; // model size; auto = RAM probe
+  readerPace: ReaderPace; // idle reading cadence
+  readerOneLiners: boolean; // reader one-liner replaces the keyphrase label line
+  readerSuggestTags: boolean; // ghost tag chips on the active note
 }
 
 export const DEFAULT_SETTINGS: RelatedNotesSettings = {
@@ -154,6 +163,11 @@ export const DEFAULT_SETTINGS: RelatedNotesSettings = {
   suggesterTakeOverUserSet: false,
   suggestNewNotes: true,
   newNoteMinSimilarity: 0.45,
+  readerEnabled: false,
+  readerRung: "auto",
+  readerPace: "balanced",
+  readerOneLiners: true,
+  readerSuggestTags: true,
 };
 
 // A few vetted model ids surfaced as a dropdown so users don't have to memorise
@@ -234,6 +248,13 @@ const ORT_CDNS = [
 export default class RelatedNotesPlugin extends Plugin {
   declare settings: RelatedNotesSettings;
   store!: IndexStore;
+  reader: ReaderService | null = null;
+  private settingsTab: RelatedNotesSettingTab | null = null;
+  private lastActivityAt = Date.now();
+
+  requestPanelRender(): void {
+    this.getView()?.requestRender();
+  }
   // Held by the plugin and shared by BOTH link features (glow + suggester).
   titleIndex!: TitleIndex;
   private engine!: EmbeddingEngine;
@@ -323,6 +344,23 @@ export default class RelatedNotesPlugin extends Plugin {
     // The precision backbone for both link features.
     this.titleIndex = new TitleIndex(this.app, () => this.linkExcludedFolders());
 
+    // Reader (4.0): a local reader model working only in idle gaps. Activity
+    // timestamps gate its scheduler; everything else lives in ReaderService.
+    // eslint-disable-next-line obsidianmd/prefer-active-doc -- one-time heartbeat listener; main window is the right approximation
+    this.registerDomEvent(document, "keydown", () => (this.lastActivityAt = Date.now()));
+    // eslint-disable-next-line obsidianmd/prefer-active-doc -- same heartbeat
+    this.registerDomEvent(document, "pointerdown", () => (this.lastActivityAt = Date.now()));
+    this.reader = new ReaderService(this.readerHost(), {
+      rung: this.settings.readerRung,
+      pace: this.settings.readerPace,
+      idleUnloadMinutes: this.settings.idleUnloadMinutes,
+    });
+    this.reader.onStatus = () => {
+      this.getView()?.requestRender();
+      this.settingsTab?.updateReaderStatus();
+    };
+    if (this.settings.readerEnabled) void this.reader.enable();
+
     this.registerView(VIEW_TYPE_RELATED, (leaf) => new RelatedNotesView(leaf, this));
     this.registerView(VIEW_TYPE_MAP, (leaf) => new VaultMapView(leaf, this));
 
@@ -381,7 +419,8 @@ export default class RelatedNotesPlugin extends Plugin {
     this.suggester = new SmartLinkSuggester(this);
     this.registerEditorSuggest(this.suggester);
 
-    this.addSettingTab(new RelatedNotesSettingTab(this.app, this));
+    this.settingsTab = new RelatedNotesSettingTab(this.app, this);
+    this.addSettingTab(this.settingsTab);
 
     // Re-rank the panel when the active note changes (the view debounces
     // internally), and stamp the active file path onto the glow bridge so the CM6
@@ -512,6 +551,7 @@ export default class RelatedNotesPlugin extends Plugin {
     // worker realm (terminal: post-dispose calls reject instead of respawning).
     this.store?.close();
     void this.engine?.dispose();
+    void this.reader?.disable();
     // The registered view + editor extension + suggest registration are torn down
     // by Obsidian; we only undo the manual precedence reorder we made.
     this.removeSuggesterPrecedence();
@@ -613,6 +653,61 @@ export default class RelatedNotesPlugin extends Plugin {
       `could not obtain the ONNX runtime (${files.wasm}) — ${failures.join("; ")}. ` +
         "Offline, or a firewall/proxy/antivirus blocks these URLs.",
     );
+  }
+
+  // Everything the reader service may touch, in one narrow surface. It gets no
+  // direct store or vault access beyond this.
+  private readerHost(): ReaderHost {
+    return {
+      vaultRead: (file) => this.app.vault.cachedRead(file),
+      markdownFiles: () =>
+        this.app.vault.getMarkdownFiles().filter((f) => !this.store.isExcluded(f.path)),
+      fileByPath: (path) => {
+        const f = this.app.vault.getAbstractFileByPath(path);
+        return f instanceof TFile ? f : null;
+      },
+      fileTags: (path) => {
+        const f = this.app.vault.getAbstractFileByPath(path);
+        if (!(f instanceof TFile)) return [];
+        const cache = this.app.metadataCache.getFileCache(f);
+        return (cache ? getAllTags(cache) ?? [] : []).map((t) => t.replace(/^#/, "").toLowerCase());
+      },
+      neighborPaths: (path, k) => {
+        const f = this.app.vault.getAbstractFileByPath(path);
+        if (!(f instanceof TFile)) return Promise.resolve([]);
+        return Promise.resolve(this.store.rank(f).slice(0, k).map((r) => r.file.path));
+      },
+      recentPaths: () => this.app.workspace.getLastOpenFiles(),
+      indexBusy: () => {
+        const s = this.store.getProgress().status;
+        return s === "building" || s === "loading";
+      },
+      lastUserActivity: () => this.lastActivityAt,
+      requestRender: () => this.getView()?.requestRender(),
+      loadArtifacts: async () => {
+        const p = normalizePath(`${this.pluginDir()}/reader-artifacts.json`);
+        return (await this.app.vault.adapter.exists(p)) ? this.app.vault.adapter.read(p) : null;
+      },
+      saveArtifacts: (json) =>
+        this.app.vault.adapter.write(normalizePath(`${this.pluginDir()}/reader-artifacts.json`), json),
+      readEngineBundle: async () => {
+        const p = normalizePath(`${this.pluginDir()}/reader-bundle.mjs`);
+        return new Uint8Array(await this.app.vault.adapter.readBinary(p));
+      },
+    };
+  }
+
+  // Settings-tab hook: push the current reader settings into the service and
+  // start/stop it on the master toggle.
+  applyReaderSettings(): void {
+    if (!this.reader) return;
+    this.reader.configure({
+      rung: this.settings.readerRung,
+      pace: this.settings.readerPace,
+      idleUnloadMinutes: this.settings.idleUnloadMinutes,
+    });
+    if (this.settings.readerEnabled && this.reader.status.state === "off") void this.reader.enable();
+    if (!this.settings.readerEnabled && this.reader.status.state !== "off") void this.reader.disable();
   }
 
   private pluginDir(): string {
@@ -1775,6 +1870,135 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       { min: 20, max: 150, step: 10, value: this.plugin.settings.shortlistSize },
       (v) => (this.plugin.settings.shortlistSize = v),
     );
+
+    this.readerSection(host);
+  }
+
+  // --- Reader (4.0 beta) -----------------------------------------------------
+  private readerStatusEl: HTMLElement | null = null;
+
+  updateReaderStatus(): void {
+    const r = this.plugin.reader;
+    if (!this.readerStatusEl || !r) return;
+    const s = r.status;
+    if (s.state === "off") this.readerStatusEl.setText("Off.");
+    else if (s.state === "downloading") this.readerStatusEl.setText(`Downloading: ${s.detail}`);
+    else if (s.state === "error") this.readerStatusEl.setText(`Engine error: ${s.detail}`);
+    else this.readerStatusEl.setText(`Reading in the background: ${s.read} of ${s.total} notes done.`);
+  }
+
+  private readerSection(host: HTMLElement): void {
+    const save = (): void => {
+      this.debouncedSave.run();
+      this.plugin.applyReaderSettings();
+    };
+    new Setting(host).setName("Reader (beta)").setHeading();
+    host.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "A small reader model that quietly reads your notes in the background, so the panel can label and judge connections better. Runs entirely on your machine. Notes never leave it.",
+    });
+
+    new Setting(host)
+      .setName("Enable the reader")
+      .setDesc(
+        "Turning this on downloads the engine (~50 MB) and the selected model below, then reads notes only while Obsidian is idle.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.readerEnabled).onChange((v) => {
+          this.plugin.settings.readerEnabled = v;
+          save();
+          // eslint-disable-next-line @typescript-eslint/no-deprecated -- the tab's only render hook is its own display()
+          this.display();
+        }),
+      );
+
+    new Setting(host)
+      .setName("Model")
+      .setDesc(
+        "Auto picks by memory: large on big machines (~4.8 GB download, needs ~6 GB free), mid on 16 GB (~2.5 GB), small below that (~1.3 GB). The small model labels notes but cannot judge; judgment features stay off on it.",
+      )
+      .addDropdown((d) => {
+        d.addOption("auto", "Auto (by this machine's memory)");
+        for (const r of RUNGS) d.addOption(r.id, r.label);
+        d.setValue(this.plugin.settings.readerRung).onChange((v) => {
+          this.plugin.settings.readerRung = v as RelatedNotesSettings["readerRung"];
+          save();
+        });
+      });
+
+    new Setting(host)
+      .setName("Reading pace")
+      .setDesc("How often the reader picks up the next note during idle time. It always pauses while you type and while indexing runs.")
+      .addDropdown((d) =>
+        d
+          .addOption("light", "Light")
+          .addOption("balanced", "Balanced")
+          .addOption("fast", "Fast")
+          .setValue(this.plugin.settings.readerPace)
+          .onChange((v) => {
+            this.plugin.settings.readerPace = v as RelatedNotesSettings["readerPace"];
+            save();
+          }),
+      );
+
+    new Setting(host)
+      .setName("One-liners on cards")
+      .setDesc("Replace the keyphrase label under each card title with the reader's one-line summary; the fuller summary appears on hover.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.readerOneLiners).onChange((v) => {
+          this.plugin.settings.readerOneLiners = v;
+          save();
+          this.plugin.requestPanelRender();
+        }),
+      );
+
+    new Setting(host)
+      .setName("Suggest tags that likely fit")
+      .setDesc("Ghost chips above the panel for the active note. One click adds the tag to frontmatter; suggestions come only from tags your vault already uses.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.readerSuggestTags).onChange((v) => {
+          this.plugin.settings.readerSuggestTags = v;
+          save();
+          this.plugin.requestPanelRender();
+        }),
+      );
+
+    this.readerStatusEl = host.createEl("p", { cls: "setting-item-description" });
+    this.updateReaderStatus();
+    const err = this.plugin.reader?.engineError();
+    if (err) {
+      new Setting(host)
+        .setName("Engine failed to load")
+        .setDesc("The error above decides the fix; retry after checking memory, or report it with the exact message.")
+        .addButton((b) =>
+          b.setButtonText("Retry").onClick(() => {
+            void this.plugin.reader?.enable();
+          }),
+        );
+    }
+
+    const sizes = assetSizesMb();
+    if (sizes.engine > 0 || sizes.models.length > 0) {
+      const parts = [
+        sizes.engine > 0 ? `engine ${Math.round(sizes.engine)} MB` : "",
+        ...sizes.models.map((m) => `${m.file.replace(/\.gguf$/, "")} ${(m.mb / 1000).toFixed(1)} GB`),
+      ].filter(Boolean);
+      new Setting(host)
+        .setName("On this device")
+        .setDesc(`${parts.join(" · ")} — stored outside the vault, never synced.`)
+        .addButton((b) =>
+          b.setButtonText("Remove downloads").onClick(() => {
+            this.plugin.settings.readerEnabled = false;
+            save();
+            void this.plugin.reader?.disable().then(() => {
+              removeAssets();
+              // eslint-disable-next-line @typescript-eslint/no-deprecated -- see above
+              this.display();
+            });
+          }),
+        );
+    }
   }
 
   hide(): void {
