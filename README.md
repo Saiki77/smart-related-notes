@@ -119,17 +119,9 @@ were each built, measured, and dropped.
   together, coloured by cluster and labelled automatically from the notes themselves.
   Click a point to open it, click a cluster to hide it. Open it with the **Open the
   vault map** command.
-- **Surprising connections**: pairs your links connect through shared context but
-  whose wording is too different for similarity to ever pair them. Because each note
-  must sit outside the other's top matches to qualify, this list cannot fill up with
-  obvious siblings the way a similarity ranking does.
 
 <p align="center">
   <img src="docs/feature-vault-map.svg" alt="A map of your whole vault: every note a point, placed so related notes sit together, coloured and named by cluster; 433 notes of the lab vault forming linear algebra, machine learning, patterns and databases, algorithms and search, daily notes and drafts, at cluster purity 0.65 against 0.29 for a shuffled baseline" width="880">
-</p>
-
-<p align="center">
-  <img src="docs/feature-surprising.svg" alt="Surprising connections: a discovery list that cannot fill up with things you already knew, because pairs must be outside each other's top matches to qualify" width="880">
 </p>
 
 ### Private, and it stays that way
@@ -157,11 +149,6 @@ palette to generate a report note for the whole vault:
 
 - **Suggested links**: the strongest related notes that you have *not* linked yet,
   ranked by similarity. The fastest way to grow a sparse graph.
-- **Surprising connections**: pairs your links connect through shared context but
-  whose wording is too different for similarity to ever pair them. Each note sits
-  outside the other's top matches, so this list cannot fill up with obvious
-  siblings the way a similarity ranking does. Every entry names the note that
-  bridges the two.
 - **Suggested tags**: notes that are missing a tag most of their semantic neighbours
   share. The plugin infers a likely category (e.g. a character profile that lacks your
   `goa/character` tag) from similarity alone, only proposing discriminative tags.

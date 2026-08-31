@@ -315,7 +315,6 @@ export interface VaultInsights {
   // Pairs the LINK GRAPH predicts belong together while the prose does not —
   // each is outside the other's content top-10, so similarity ranking can never
   // surface them. `via` is the shared note that bridges them (the receipt).
-  surprising: { a: string; b: string; via: string[]; score: number }[];
 }
 
 // Index lifecycle state, surfaced to the view for its status line.
@@ -2822,98 +2821,7 @@ export class IndexStore {
       nearDuplicates: dups.slice(0, DUP_N),
       suggestedLinks: suggested.slice(0, SUGGEST_N),
       suggestedTags: suggestedTags.slice(0, TAG_N),
-      surprising: this.surprisingConnections(ignore),
     };
-  }
-
-  // SURPRISING CONNECTIONS.
-  //
-  // Every discovery feature that ranks by similarity collapses to the obvious,
-  // because the most similar notes ARE the obvious ones — blind judges called
-  // 8 of 9 such finds "predictable from the titles alone". So this ranks by the
-  // structural channel and then FILTERS OUT anything the content channel already
-  // considers a neighbour. Non-obviousness is the gate, not an afterthought,
-  // which is why it cannot degrade into a list of siblings.
-  //
-  // A pair qualifies when: it is unlinked, each note is outside the other's
-  // content top-10, they share at least one non-hub neighbour, and they are not
-  // so semantically unrelated as to be noise (CONTENT_FLOOR — without it the list
-  // fills with pairs that merely both link to a popular note).
-  private surprisingConnections(ignore: Set<string>): VaultInsights["surprising"] {
-    const SURPRISE_N = 30;
-    // Below this the pair has no topical thread at all and reads as random.
-    const CONTENT_FLOOR = 0.05;
-    if (!this.graph.hasGraph()) return [];
-    const paths = [...this.entries.keys()].filter((p) => !ignore.has(p));
-    if (paths.length < 3) return [];
-
-    // Candidates first, similarities second. An earlier version precomputed the
-    // whole n x n similarity matrix and kept it in a Map of Maps; at 3k notes
-    // that is ~9M entries and ~470 MB, and it grows quadratically, while fewer
-    // than 0.1% of the cells were ever read. The graph proposes at most 20
-    // candidates per note, so collect those first and price only the pairs that
-    // actually reach the filters.
-    const pairs: { a: string; b: string }[] = [];
-    const seen = new Set<string>();
-    const needTopTen = new Set<string>();
-    for (const p of paths) {
-      const neighbours = this.graph.neighbours(p);
-      const selfAreas = this.noteAreas(p);
-      for (const cand of this.graph.candidates(p, 20)) {
-        const q = cand.path;
-        if (ignore.has(q) || q === p || neighbours.has(q)) continue;
-        // Isolated areas partition the vault everywhere else; they must here too,
-        // or an activated area leaks into the report through the link graph.
-        if (!this.areaMatch(selfAreas, this.noteAreas(q))) continue;
-        const key = p < q ? `${p} ${q}` : `${q} ${p}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        pairs.push({ a: p, b: q });
-        needTopTen.add(p);
-        needTopTen.add(q);
-      }
-    }
-    if (pairs.length === 0) return [];
-
-    // Content top-10, computed ONLY for notes that appear in a candidate pair,
-    // and kept as a bounded 10-element selection rather than a sorted full row.
-    const topTen = new Map<string, Set<string>>();
-    for (const p of needTopTen) {
-      const a = this.entries.get(p);
-      if (!a) continue;
-      const va = this.centeredMean(a);
-      const best: { path: string; sim: number }[] = [];
-      for (const q of paths) {
-        if (q === p) continue;
-        const b = this.entries.get(q);
-        if (!b || b.dims !== a.dims) continue;
-        const sim = cosineSimilarity(va, this.centeredMean(b));
-        if (best.length < 10) {
-          best.push({ path: q, sim });
-          if (best.length === 10) best.sort((x, y) => x.sim - y.sim);
-        } else if (sim > best[0].sim) {
-          best[0] = { path: q, sim };
-          best.sort((x, y) => x.sim - y.sim);
-        }
-      }
-      topTen.set(p, new Set(best.map((x) => x.path)));
-    }
-
-    const out: VaultInsights["surprising"] = [];
-    for (const { a: p, b: q } of pairs) {
-      // Must be non-obvious in BOTH directions — a pair that is obvious from
-      // one side is just an asymmetric similarity hit.
-      if (topTen.get(p)?.has(q) || topTen.get(q)?.has(p)) continue;
-      const ea = this.entries.get(p), eb = this.entries.get(q);
-      if (!ea || !eb || ea.dims !== eb.dims) continue;
-      const sim = cosineSimilarity(this.centeredMean(ea), this.centeredMean(eb));
-      if (sim < CONTENT_FLOOR) continue;
-      const { shared, ra } = this.graph.evidence(p, q);
-      if (ra <= 0 || shared.length === 0) continue;
-      out.push({ a: p, b: q, via: shared.slice(0, 3).map(basenameOf), score: ra });
-    }
-    out.sort((x, y) => y.score - x.score);
-    return out.slice(0, SURPRISE_N);
   }
 
   // Confidence in a note's semantic score, from how much BODY text it carries (see

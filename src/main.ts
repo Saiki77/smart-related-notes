@@ -683,7 +683,7 @@ export default class RelatedNotesPlugin extends Plugin {
     }
     await this.app.workspace.getLeaf(false).openFile(file);
     new Notice(
-      `Vault insights: ${insights.suggestedLinks.length} link suggestions, ${insights.surprising.length} surprising connections, ${insights.orphans.length} orphans.`,
+      `Vault insights: ${insights.suggestedLinks.length} link suggestions, ${insights.orphans.length} orphans.`,
     );
   }
 
@@ -719,7 +719,6 @@ export default class RelatedNotesPlugin extends Plugin {
       `> [!abstract] ${ins.total} notes indexed`,
       "> " + [
         `**${ins.suggestedLinks.length}** links to make`,
-        `**${ins.surprising.length}** surprising connections`,
         `**${ins.orphans.length}** orphans`,
         `**${ins.nearDuplicates.length}** possible duplicates`,
       ].join(" · "),
@@ -734,13 +733,6 @@ export default class RelatedNotesPlugin extends Plugin {
         : ["Strongly related, not linked yet.", "",
            ...table(["Note", "Relates to", "Match"],
              ins.suggestedLinks.map((x) => [wl(x.from), wl(x.to), pct(x.score)]))]);
-
-    cal("quote", `Surprising connections (${ins.surprising.length})`,
-      ins.surprising.length === 0
-        ? ["None yet. This one grows as you link more notes together."]
-        : ["Your links connect these; their wording never would. Each names the note that bridges the two.", "",
-           ...table(["Note", "Note", "Bridged by"],
-             ins.surprising.map((x) => [wl(x.a), wl(x.b), x.via.map((v) => `\`${v}\``).join(", ")]))]);
 
     cal("hint", `Suggested tags (${ins.suggestedTags.length})`,
       ins.suggestedTags.length === 0

@@ -38,6 +38,7 @@
     "esbuild": "^0.28.1",
     "eslint": "^9.39.4",
     "eslint-plugin-obsidianmd": "^0.3.0",
+    "node-llama-cpp": "^3.20.0",
     "obsidian": "^1.13.0",
     "typescript": "^5.5.0",
     "typescript-eslint": "^8.60.1"

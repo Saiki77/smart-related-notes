@@ -140,11 +140,6 @@ regression on the other, so it nominates but does not judge. And hubness correct
 (CSLS) of the content channel, an obvious-looking win, helped the weaker model by
 0.005 and cost the stronger one 0.030, so it is not in the product.
 
-The same machinery, run vault-wide and then filtered to pairs that are outside each
-other's content top-10, is **Surprising Connections** in the insights report: a
-discovery surface whose gate is non-obviousness itself, which is why it cannot
-collapse into a list of textbook siblings the way similarity ranking does.
-
 ## 4c. Template de-crowding
 
 Notes written from one template are mutually similar for a reason unrelated to their
