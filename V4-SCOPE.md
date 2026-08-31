@@ -12,6 +12,18 @@
 > | blind gist panel (3 judges, 30 notes x 3 rungs) | **4B-2507 9.26 ties 8B 9.23 (of 10); 8B edges head-to-head wins 10 vs 7; 1.7B 8.32** |
 > | ladder decision | 8B default where it fits (>= ~24 GB), **4B-2507 mid + CPU rung (the spike's surprise)**, 1.7B small-RAM rung with judge tasks disabled |
 > | next | user pastes the Obsidian console test; then step 1 (engine build) + AQ judge replay on real mined sparks |
+>
+> ## STATUS — 4.0.0-beta.1 SHIPPED (2026-08-29, branch feat/reader, tag pushed)
+>
+> Steps 1-2 landed in one beta: engine (native backend via in-process
+> dynamic import of reader-bundle.mjs; runtime asset download with npm
+> sha512 + HF LFS sha256 pins; idle scheduler; artifact cache; settings
+> section) + one-liners/gists on cards + ghost tag chips. First-enable
+> flow E2E-verified in Node from a clean root (tar extraction, checksums,
+> engine boot on Metal, generate, dispose). The in-Obsidian gate is now
+> the beta install itself; a load failure surfaces in settings with the
+> exact error and a retry. Web/Lite engine, because-lines, cluster names,
+> query expansion: next betas.
 
 Written against the repo at **3.1.0** (2026-08-29). Nothing below is built.
 Every feature follows the house rule: **measured in the lab before it ships**,
