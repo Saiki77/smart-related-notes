@@ -12,6 +12,7 @@
 > | blind gist panel (3 judges, 30 notes x 3 rungs) | **4B-2507 9.26 ties 8B 9.23 (of 10); 8B edges head-to-head wins 10 vs 7; 1.7B 8.32** |
 > | ladder decision | 8B default where it fits (>= ~24 GB), **4B-2507 mid + CPU rung (the spike's surprise)**, 1.7B small-RAM rung with judge tasks disabled |
 > | next | user pastes the Obsidian console test; then step 1 (engine build) + AQ judge replay on real mined sparks |
+> | 4.0.0-beta.2 (2026-09-11) | **offline setup for blocked networks**: browser-download links per platform/rung + content-identified import with pinned checksums (npm sha512, GGUF sha256 cross-checked against LFS pointers); enable completes fully offline once imported (validated in Node with fetch disabled, engine booted from the imported layout); network/cert failures now point at Offline setup |
 >
 > ## STATUS — 4.0.0-beta.1 SHIPPED (2026-08-29, branch feat/reader, tag pushed)
 >

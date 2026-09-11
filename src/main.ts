@@ -19,7 +19,7 @@ import {
   type Debouncer,
 } from "obsidian";
 import { ReaderService, type ReaderHost, type ReaderPace } from "./reader/reader-service";
-import { RUNGS, removeAssets, assetSizesMb, type RungSpec } from "./reader/reader-assets";
+import { RUNGS, removeAssets, assetSizesMb, offlineItems, importAssetFiles, type RungSpec } from "./reader/reader-assets";
 import {
   EmbeddingEngine,
   setOrtAssetLoader,
@@ -1977,7 +1977,78 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
           }),
         );
     }
+    this.readerOfflineSection(host, err !== null && err !== undefined && /block|fetch|network|certificat/i.test(err));
+    this.readerStorageSection(host);
+  }
 
+  // Offline setup: for networks that block the plugin's own downloads
+  // (corporate proxies, domain blocklists). Every URL opens in the system
+  // browser, which usually gets through where the plugin cannot; the files
+  // can also be fetched on another machine and carried over. Import verifies
+  // each file against pinned checksums before anything is installed.
+  private readerOfflineSection(host: HTMLElement, open: boolean): void {
+    const details = host.createEl("details", { cls: "setting-item-description" });
+    if (open) details.setAttr("open", "");
+    details.createEl("summary", { text: "Offline setup (blocked or restricted networks)" });
+    details.createEl("p", {
+      text:
+        "If enabling fails because this network blocks downloads, download these files in any browser (here or on another computer), then import them below. Files are verified by checksum; renamed downloads are fine.",
+    });
+    const rung = this.plugin.reader?.rung() ?? RUNGS[RUNGS.length - 1];
+    const items = offlineItems(rung);
+    const list = details.createEl("ul");
+    for (const it of items) {
+      const li = list.createEl("li");
+      li.createEl("a", { text: it.label, href: it.url });
+      li.appendText(` (${it.sizeLabel})`);
+      if (it.present) li.appendText(" — installed ✓");
+      else if (it.optional) li.appendText(" — optional");
+    }
+    const row = details.createDiv();
+    const copy = row.createEl("button", { text: "Copy links" });
+    copy.onclick = () => {
+      const missing = items.filter((i) => !i.present).map((i) => i.url);
+      void navigator.clipboard.writeText((missing.length > 0 ? missing : items.map((i) => i.url)).join("\n"));
+      new Notice("Download links copied.");
+    };
+    row.appendText(" ");
+    const picker = row.createEl("input", { type: "file" });
+    picker.multiple = true;
+    picker.accept = ".tgz,.gz,.gguf";
+    picker.hidden = true;
+    const importBtn = row.createEl("button", { text: "Import downloaded files…" });
+    importBtn.onclick = () => picker.click();
+    const out = details.createEl("p");
+    picker.onchange = async () => {
+      const files = Array.from(picker.files ?? []);
+      if (files.length === 0) return;
+      importBtn.disabled = true;
+      out.setText("Importing…");
+      try {
+        const results = await importAssetFiles(
+          files.map((f) => ({ name: f.name, size: f.size, stream: () => f.stream() })),
+          (label, done, total) => {
+            out.setText(total > 1 ? `${label} ${Math.round((done / total) * 100)}%` : label);
+          },
+        );
+        out.setText(results.map((r) => `${r.ok ? "✓" : "✗"} ${r.file}: ${r.note}`).join("  ·  "));
+        const allNeededPresent = offlineItems(this.plugin.reader?.rung() ?? rung)
+          .filter((i) => !i.optional)
+          .every((i) => i.present);
+        if (allNeededPresent && this.plugin.settings.readerEnabled) {
+          new Notice("Reader files imported. Starting the engine.");
+          void this.plugin.reader?.enable();
+        }
+      } catch (e) {
+        out.setText(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        importBtn.disabled = false;
+        picker.value = "";
+      }
+    };
+  }
+
+  private readerStorageSection(host: HTMLElement): void {
     const sizes = assetSizesMb();
     if (sizes.engine > 0 || sizes.models.length > 0) {
       const parts = [
@@ -1990,7 +2061,8 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         .addButton((b) =>
           b.setButtonText("Remove downloads").onClick(() => {
             this.plugin.settings.readerEnabled = false;
-            save();
+            this.debouncedSave.run();
+            this.plugin.applyReaderSettings();
             void this.plugin.reader?.disable().then(() => {
               removeAssets();
               // eslint-disable-next-line @typescript-eslint/no-deprecated -- see above

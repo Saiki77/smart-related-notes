@@ -108,7 +108,16 @@ export class ReaderService {
       this.refreshCounts();
       this.startTicking();
     } catch (e) {
-      this.setStatus({ state: "error", detail: e instanceof Error ? e.message : String(e) });
+      const msg = e instanceof Error ? e.message : String(e);
+      // Corporate proxies and blocklists surface here as fetch/TLS failures.
+      // Name the way out instead of leaving a bare network error.
+      const blocked = /fetch failed|failed to fetch|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|certificat|CERT_|self.signed|local issuer|ERR_TLS|ERR_NETWORK|ERR_CERT|403|407|HTTP 5/i.test(msg);
+      this.setStatus({
+        state: "error",
+        detail: blocked
+          ? `${msg} — this network seems to block downloads. Use "Offline setup" below: download the files in your browser, then import them.`
+          : msg,
+      });
     }
   }
 

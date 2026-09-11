@@ -31,6 +31,35 @@ export function autoRung(): RungSpec {
   return RUNGS.find((r) => ramGb >= r.minRamGb) ?? RUNGS[RUNGS.length - 1];
 }
 
+// Pinned checksums, so files a user downloaded in a BROWSER (the offline path
+// for networks that block the plugin's own downloads) verify without any
+// network access. npm integrity values are the registry's own, recorded for
+// ENGINE_VERSION; GGUF sha256/size come from each repo's LFS pointer and were
+// cross-checked against locally downloaded files.
+const NPM_INTEGRITY: Record<string, string> = {
+  "node-llama-cpp": "sha512-KnET3ttADYLCobjMnMTLkWkLt87rPRDhNzTZgGOCt8m8yTmdQW2sfLNmulGBA9laFvcyRIMOsgQST8lunPmMgw==",
+  "@node-llama-cpp/mac-arm64-metal": "sha512-QeFyyTZWicxKGzyoYwR1VtBGM8R1/oHjai9DC6KSg3T8WYpZd3mqATy24GPPVxgg20yEXUCbNl4xyKXZsLD0dQ==",
+  "@node-llama-cpp/mac-x64": "sha512-3/B1uT0dNkhGTVkjTpI6OlHdUsic9NWDeocO0GHeq134LmQan34rERpR7JJgyv50iXufah+mvumFD/VZvfUqqQ==",
+  "@node-llama-cpp/win-x64-vulkan": "sha512-7V2SjNejon668+xmtlZ36u2FmtIT2fOfQbGjT5zJ6ydW1Xec53VsX1VwQdikx+79Y9/gEp7L2GtBcX6bc0LsCQ==",
+  "@node-llama-cpp/win-x64": "sha512-Mbh9n74DCB5zTw02cme7Kp9nVg9X5Wvf+SNMWkXx5o3rGLuiSijGqRIktPOO3aHQwshB/RXC4j6I34HCPsgdgg==",
+  "@node-llama-cpp/win-arm64": "sha512-UDx5NBXVRtcLaoQsF1gZiYlgXQYfxLbFVb4j4sa7Jgq/b6oq2lTAjeos7sYsMPRKa+S/BB/rDFis6FsRDJur7w==",
+  "@node-llama-cpp/linux-x64-vulkan": "sha512-xTzv4cuTpsmmQgqvWWZvcvURHfPgUQdQzVXvYN1bwAEYq2DRVckEKrHPJ48824sFmdIRRJqDerniqEXiZlDPzA==",
+  "@node-llama-cpp/linux-x64": "sha512-zCSTd5m4MDrLWzgUvOvuGGzHm9DiEONZt+srgHYhV4Ppu/T5TL3kENj7lHY1cmQccKNgepABiyb9KcigjZbvSQ==",
+  "@node-llama-cpp/linux-arm64": "sha512-WFAffebfOLqBaZMfNsORns1G5vLMRVthxw/moDzON7TGYH6PTQN97h5YkLfRoSmZne/rtpHXH2LdYg0vFNAgnQ==",
+};
+const GGUF_PIN: Record<string, { sha256: string; bytes: number }> = {
+  "Qwen3-8B-Q4_K_M.gguf": { sha256: "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785", bytes: 5027783488 },
+  "Qwen3-4B-Instruct-2507-Q4_K_M.gguf": { sha256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597", bytes: 2497281120 },
+  "Qwen3-1.7B-Q4_K_M.gguf": { sha256: "b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897", bytes: 1107409472 },
+};
+// Runtime payload of the main engine package; build-time payload excluded.
+const MAIN_KEEP = /^(llama\/(?!gitRelease|toolchains|cmake|addon)|package\.json$)/;
+
+function npmTarballUrl(name: string): string {
+  const base = name.startsWith("@") ? name.split("/")[1] : name;
+  return `https://registry.npmjs.org/${name}/-/${base}-${ENGINE_VERSION}.tgz`;
+}
+
 // llama.cpp prebuilt targets for this process; first entry that exists in the
 // registry wins at runtime inside the engine (it probes vulkan, then cpu).
 function platformPackages(): string[] {
@@ -117,8 +146,13 @@ async function extractNpmPackage(
   const want = meta.dist.integrity;
   const got = `sha512-${crypto.createHash("sha512").update(raw).digest("base64")}`;
   if (want !== got) throw new Error(`checksum mismatch for ${name}`);
+  extractTarball(raw, keep, destRoot);
+  progress(`Downloading ${name}`, 1, 1);
+}
+
+function extractTarball(gz: Uint8Array, keep: RegExp, destRoot: string): void {
   const zlib = require("node:zlib") as typeof import("zlib");
-  const tar = zlib.gunzipSync(raw);
+  const tar = zlib.gunzipSync(gz);
   const f = fs();
   const path = pathMod();
   for (const e of tarEntries(tar)) {
@@ -130,7 +164,6 @@ async function extractNpmPackage(
     f.mkdirSync(path.dirname(dest), { recursive: true });
     f.writeFileSync(dest, e.data);
   }
-  progress(`Downloading ${name}`, 1, 1);
 }
 
 // ---------------------------------------------------------------- gguf -----
@@ -221,20 +254,23 @@ export async function ensureAssets(
 
   const stamp = path.join(root, "engine.version");
   const current = f.existsSync(stamp) ? f.readFileSync(stamp).toString() : "";
+  if (current !== ENGINE_VERSION && current !== "") {
+    // Engine parts from another version cannot be trusted with this bundle.
+    f.rmSync(path.join(root, "llama"), { recursive: true, force: true });
+    f.rmSync(path.join(root, "bins"), { recursive: true, force: true });
+    f.rmSync(stamp, { recursive: false, force: true });
+  }
   if (current !== ENGINE_VERSION || !f.existsSync(bundlePath())) {
+    // Local copy out of the plugin folder; involves no network.
     progress("Staging engine", 0, 1);
     f.writeFileSync(bundlePath(), await pluginBundleSource());
-    // Runtime data dir of the engine package; build-time payload excluded.
-    if (current !== ENGINE_VERSION) {
-      f.rmSync(path.join(root, "llama"), { recursive: true, force: true });
-      f.rmSync(path.join(root, "bins"), { recursive: true, force: true });
-    }
-    await extractNpmPackage(
-      "node-llama-cpp",
-      /^(llama\/(?!gitRelease|toolchains|cmake|addon)|package\.json$)/,
-      root,
-      progress,
-    );
+  }
+  // Engine data + binaries: skipped entirely when an offline import (or an
+  // earlier run) already put them there.
+  if (!f.existsSync(path.join(root, "llama", "binariesGithubRelease.json"))) {
+    await extractNpmPackage("node-llama-cpp", MAIN_KEEP, root, progress);
+  }
+  if (!f.existsSync(path.join(root, "bins"))) {
     for (const target of platformPackages()) {
       try {
         await extractNpmPackage(`@node-llama-cpp/${target}`, /^bins\//, root, progress);
@@ -245,13 +281,205 @@ export async function ensureAssets(
       }
     }
     if (!f.existsSync(path.join(root, "bins"))) throw new Error("no engine binaries available for this platform");
-    f.writeFileSync(stamp, ENGINE_VERSION);
   }
+  f.writeFileSync(stamp, ENGINE_VERSION);
   await downloadGguf(rung, progress);
 }
 
 export function removeAssets(): void {
   fs().rmSync(assetsRoot(), { recursive: true, force: true });
+}
+
+// ------------------------------------------------------------ offline ------
+// For networks that block the plugin's own downloads (corporate proxies,
+// domain blocklists): the user downloads these URLs in any browser — on this
+// machine or another — and imports the files below. Import identifies every
+// file by CONTENT (checksum), so browser-renamed files ("model (1).gguf")
+// are fine and a wrong or tampered file can never be installed.
+
+export interface OfflineItem {
+  label: string;
+  url: string;
+  sizeLabel: string;
+  present: boolean;
+  optional: boolean;
+}
+
+export function offlineItems(rung: RungSpec): OfflineItem[] {
+  const f = fs();
+  const path = pathMod();
+  const root = assetsRoot();
+  const items: OfflineItem[] = [
+    {
+      label: "Engine core (node-llama-cpp)",
+      url: npmTarballUrl("node-llama-cpp"),
+      sizeLabel: "≈35 MB",
+      present: f.existsSync(path.join(root, "llama", "binariesGithubRelease.json")),
+      optional: false,
+    },
+  ];
+  const targets = platformPackages();
+  for (const t of targets) {
+    items.push({
+      label: `Engine binaries (${t})`,
+      url: npmTarballUrl(`@node-llama-cpp/${t}`),
+      sizeLabel: "≈5-45 MB",
+      present: f.existsSync(path.join(root, "bins", t)),
+      // On Windows/Linux the vulkan build is the fast path and the plain one
+      // the fallback; either alone is enough to run.
+      optional: targets.length > 1 && t === targets[targets.length - 1],
+    });
+  }
+  const pin = GGUF_PIN[rung.file];
+  items.push({
+    label: rung.label,
+    url: `https://huggingface.co/${rung.repo}/resolve/main/${rung.file}?download=true`,
+    sizeLabel: `${(pin.bytes / 1e9).toFixed(1)} GB`,
+    present: f.existsSync(modelPath(rung)),
+    optional: false,
+  });
+  return items;
+}
+
+export interface ImportCandidate {
+  name: string;
+  size: number;
+  stream(): ReadableStream<Uint8Array>;
+}
+
+export interface ImportOutcome {
+  file: string;
+  ok: boolean;
+  note: string;
+}
+
+async function slurp(c: ImportCandidate): Promise<Uint8Array> {
+  const reader = c.stream().getReader();
+  const parts: Uint8Array[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value);
+  }
+  const out = new Uint8Array(parts.reduce((s, p) => s + p.byteLength, 0));
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.byteLength;
+  }
+  return out;
+}
+
+async function importGguf(c: ImportCandidate, spec: RungSpec, progress: AssetProgress): Promise<ImportOutcome> {
+  const f = fs();
+  const path = pathMod();
+  const crypto = require("node:crypto") as typeof import("crypto");
+  const pin = GGUF_PIN[spec.file];
+  const dest = modelPath(spec);
+  if (f.existsSync(dest)) return { file: c.name, ok: true, note: `${spec.label} is already installed` };
+  f.mkdirSync(path.dirname(dest), { recursive: true });
+  const part = `${dest}.import`;
+  const hash = crypto.createHash("sha256");
+  const out = f.createWriteStream(part, { flags: "w" });
+  const reader = c.stream().getReader();
+  let have = 0;
+  let first = true;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (first) {
+        first = false;
+        if (new TextDecoder().decode(value.subarray(0, 4)) !== "GGUF") {
+          throw new Error("not a GGUF model file");
+        }
+      }
+      hash.update(value);
+      have += value.byteLength;
+      if (!out.write(value)) await new Promise((r) => out.once("drain", r));
+      progress(`Importing ${spec.label}`, have, pin.bytes);
+    }
+    await new Promise<void>((r) => out.end(r));
+    if (hash.digest("hex") !== pin.sha256) {
+      throw new Error("checksum mismatch — the download is incomplete or altered; re-download it");
+    }
+    f.renameSync(part, dest);
+    return { file: c.name, ok: true, note: `${spec.label} installed and verified` };
+  } catch (e) {
+    await new Promise<void>((r) => out.end(r));
+    f.rmSync(part, { recursive: false, force: true });
+    return { file: c.name, ok: false, note: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function importEngineTarball(c: ImportCandidate, raw: Uint8Array): ImportOutcome {
+  const f = fs();
+  const path = pathMod();
+  const crypto = require("node:crypto") as typeof import("crypto");
+  const root = assetsRoot();
+  const got = `sha512-${crypto.createHash("sha512").update(raw).digest("base64")}`;
+  const name = Object.keys(NPM_INTEGRITY).find((n) => NPM_INTEGRITY[n] === got);
+  if (!name) {
+    // Identify what it actually is, so the message can name the fix.
+    try {
+      const zlib = require("node:zlib") as typeof import("zlib");
+      for (const e of tarEntries(zlib.gunzipSync(raw))) {
+        if (e.name.replace(/^package\//, "") === "package.json") {
+          const pkg = JSON.parse(new TextDecoder().decode(e.data)) as { name?: string; version?: string };
+          return {
+            file: c.name,
+            ok: false,
+            note: `this is ${pkg.name ?? "an unknown package"} ${pkg.version ?? ""}; the reader needs version ${ENGINE_VERSION} from the links above`,
+          };
+        }
+      }
+    } catch {
+      /* fall through */
+    }
+    return { file: c.name, ok: false, note: "not one of the reader's engine files" };
+  }
+  if (name === "node-llama-cpp") {
+    f.rmSync(path.join(root, "llama"), { recursive: true, force: true });
+    extractTarball(raw, MAIN_KEEP, root);
+    return { file: c.name, ok: true, note: "engine core installed and verified" };
+  }
+  extractTarball(raw, /^bins\//, root);
+  return { file: c.name, ok: true, note: `engine binaries (${name.split("/")[1]}) installed and verified` };
+}
+
+export async function importAssetFiles(files: ImportCandidate[], progress: AssetProgress): Promise<ImportOutcome[]> {
+  const f = fs();
+  const path = pathMod();
+  const root = assetsRoot();
+  const outcomes: ImportOutcome[] = [];
+  for (const c of files) {
+    const spec = RUNGS.find((r) => GGUF_PIN[r.file]?.bytes === c.size);
+    if (spec) {
+      outcomes.push(await importGguf(c, spec, progress));
+      continue;
+    }
+    if (c.size > 200 * 1024 * 1024) {
+      outcomes.push({ file: c.name, ok: false, note: "size matches no reader file; download the exact files linked above" });
+      continue;
+    }
+    progress(`Importing ${c.name}`, 0, 1);
+    const raw = await slurp(c);
+    if (raw[0] === 0x1f && raw[1] === 0x8b) {
+      outcomes.push(importEngineTarball(c, raw));
+    } else if (new TextDecoder().decode(raw.subarray(0, 4)) === "GGUF") {
+      outcomes.push({ file: c.name, ok: false, note: "a GGUF, but not one of the reader's models (wrong file or quantization)" });
+    } else {
+      outcomes.push({ file: c.name, ok: false, note: "unrecognized file; expected a .tgz engine file or a .gguf model" });
+    }
+  }
+  // The stamp marks a complete engine; write it only when both halves exist.
+  if (
+    f.existsSync(path.join(root, "llama", "binariesGithubRelease.json")) &&
+    f.existsSync(path.join(root, "bins"))
+  ) {
+    f.writeFileSync(path.join(root, "engine.version"), ENGINE_VERSION);
+  }
+  return outcomes;
 }
 
 export function assetSizesMb(): { engine: number; models: { file: string; mb: number }[] } {
