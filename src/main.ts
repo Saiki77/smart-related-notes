@@ -10,6 +10,7 @@ import {
   TAbstractFile,
   WorkspaceLeaf,
   MarkdownView,
+  Modal,
   Notice,
   normalizePath,
   requestUrl,
@@ -19,7 +20,16 @@ import {
   type Debouncer,
 } from "obsidian";
 import { ReaderService, type ReaderHost, type ReaderPace } from "./reader/reader-service";
-import { RUNGS, removeAssets, assetSizesMb, offlineItems, importAssetFiles, type RungSpec } from "./reader/reader-assets";
+import {
+  RUNGS,
+  removeAssets,
+  assetSizesMb,
+  offlineItems,
+  importAssetFiles,
+  importFromFolder,
+  downloadsDir,
+  type RungSpec,
+} from "./reader/reader-assets";
 import {
   EmbeddingEngine,
   setOrtAssetLoader,
@@ -381,6 +391,14 @@ export default class RelatedNotesPlugin extends Plugin {
       name: "Rebuild the index",
       callback: () => {
         void this.rebuildIndex();
+      },
+    });
+
+    this.addCommand({
+      id: "reader-offline-setup",
+      name: "Reader: offline setup (restricted networks)",
+      callback: () => {
+        new ReaderOfflineModal(this).open();
       },
     });
 
@@ -1902,7 +1920,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     new Setting(host)
       .setName("Enable the reader")
       .setDesc(
-        "Turning this on downloads the engine (~50 MB) and the selected model below, then reads notes only while Obsidian is idle.",
+        "Turning this on downloads the engine (~50 MB) and the selected model below, then reads notes only while Obsidian is idle. On networks that block downloads, run the command \"Reader: offline setup\".",
       )
       .addToggle((t) =>
         t.setValue(this.plugin.settings.readerEnabled).onChange((v) => {
@@ -1970,82 +1988,23 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     if (err) {
       new Setting(host)
         .setName("Engine failed to load")
-        .setDesc("The error above decides the fix; retry after checking memory, or report it with the exact message.")
+        .setDesc(
+          /block|fetch|network|certificat|offline/i.test(err)
+            ? "This network blocks the downloads. Offline setup fetches the files through your browser instead and does the rest automatically."
+            : "The error above decides the fix; retry after checking memory, or report it with the exact message.",
+        )
+        .addButton((b) =>
+          b.setButtonText("Offline setup").onClick(() => {
+            new ReaderOfflineModal(this.plugin).open();
+          }),
+        )
         .addButton((b) =>
           b.setButtonText("Retry").onClick(() => {
             void this.plugin.reader?.enable();
           }),
         );
     }
-    this.readerOfflineSection(host, err !== null && err !== undefined && /block|fetch|network|certificat/i.test(err));
     this.readerStorageSection(host);
-  }
-
-  // Offline setup: for networks that block the plugin's own downloads
-  // (corporate proxies, domain blocklists). Every URL opens in the system
-  // browser, which usually gets through where the plugin cannot; the files
-  // can also be fetched on another machine and carried over. Import verifies
-  // each file against pinned checksums before anything is installed.
-  private readerOfflineSection(host: HTMLElement, open: boolean): void {
-    const details = host.createEl("details", { cls: "setting-item-description" });
-    if (open) details.setAttr("open", "");
-    details.createEl("summary", { text: "Offline setup (blocked or restricted networks)" });
-    details.createEl("p", {
-      text:
-        "If enabling fails because this network blocks downloads, download these files in any browser (here or on another computer), then import them below. Files are verified by checksum; renamed downloads are fine.",
-    });
-    const rung = this.plugin.reader?.rung() ?? RUNGS[RUNGS.length - 1];
-    const items = offlineItems(rung);
-    const list = details.createEl("ul");
-    for (const it of items) {
-      const li = list.createEl("li");
-      li.createEl("a", { text: it.label, href: it.url });
-      li.appendText(` (${it.sizeLabel})`);
-      if (it.present) li.appendText(" — installed ✓");
-      else if (it.optional) li.appendText(" — optional");
-    }
-    const row = details.createDiv();
-    const copy = row.createEl("button", { text: "Copy links" });
-    copy.onclick = () => {
-      const missing = items.filter((i) => !i.present).map((i) => i.url);
-      void navigator.clipboard.writeText((missing.length > 0 ? missing : items.map((i) => i.url)).join("\n"));
-      new Notice("Download links copied.");
-    };
-    row.appendText(" ");
-    const picker = row.createEl("input", { type: "file" });
-    picker.multiple = true;
-    picker.accept = ".tgz,.gz,.gguf";
-    picker.hidden = true;
-    const importBtn = row.createEl("button", { text: "Import downloaded files…" });
-    importBtn.onclick = () => picker.click();
-    const out = details.createEl("p");
-    picker.onchange = async () => {
-      const files = Array.from(picker.files ?? []);
-      if (files.length === 0) return;
-      importBtn.disabled = true;
-      out.setText("Importing…");
-      try {
-        const results = await importAssetFiles(
-          files.map((f) => ({ name: f.name, size: f.size, stream: () => f.stream() })),
-          (label, done, total) => {
-            out.setText(total > 1 ? `${label} ${Math.round((done / total) * 100)}%` : label);
-          },
-        );
-        out.setText(results.map((r) => `${r.ok ? "✓" : "✗"} ${r.file}: ${r.note}`).join("  ·  "));
-        const allNeededPresent = offlineItems(this.plugin.reader?.rung() ?? rung)
-          .filter((i) => !i.optional)
-          .every((i) => i.present);
-        if (allNeededPresent && this.plugin.settings.readerEnabled) {
-          new Notice("Reader files imported. Starting the engine.");
-          void this.plugin.reader?.enable();
-        }
-      } catch (e) {
-        out.setText(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
-      } finally {
-        importBtn.disabled = false;
-        picker.value = "";
-      }
-    };
   }
 
   private readerStorageSection(host: HTMLElement): void {
@@ -2076,5 +2035,183 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
   hide(): void {
     // Persist any value typed/dragged right before the pane closed.
     this.debouncedSave.run();
+  }
+}
+
+// Guided offline setup for networks that block the plugin's own downloads
+// (corporate proxies, domain blocklists). One button opens every missing
+// file in the system browser, which usually gets through where the plugin
+// cannot; the modal then watches the Downloads folder and imports each file
+// the moment it finishes, verified against pinned checksums. Reached from
+// the command palette or from a failed-download error; the settings pane
+// itself stays clean.
+class ReaderOfflineModal extends Modal {
+  private timer: number | null = null;
+  private tried = new Set<string>();
+  private itemsEl: HTMLElement | null = null;
+  private watchEl: HTMLElement | null = null;
+  private logEl: HTMLElement | null = null;
+  private opening = false;
+
+  constructor(private plugin: RelatedNotesPlugin) {
+    super(plugin.app);
+  }
+
+  private rung(): RungSpec {
+    return this.plugin.reader?.rung() ?? RUNGS[RUNGS.length - 1];
+  }
+
+  private renderItems(): void {
+    if (!this.itemsEl) return;
+    this.itemsEl.empty();
+    for (const it of offlineItems(this.rung())) {
+      const li = this.itemsEl.createEl("li");
+      li.appendText(it.present ? "✓ " : "· ");
+      li.createEl("a", { text: it.label, href: it.url });
+      li.appendText(` (${it.sizeLabel})`);
+      if (it.present) li.appendText(" — installed");
+      else if (it.optional) li.appendText(" — optional");
+    }
+  }
+
+  private allRequiredPresent(): boolean {
+    return offlineItems(this.rung())
+      .filter((i) => !i.optional)
+      .every((i) => i.present);
+  }
+
+  private log(line: string): void {
+    this.logEl?.createEl("div", { text: line });
+  }
+
+  private finishIfComplete(): void {
+    if (!this.allRequiredPresent()) return;
+    if (this.timer !== null) window.clearInterval(this.timer);
+    this.timer = null;
+    this.watchEl?.setText("Everything is in place.");
+    if (this.plugin.settings.readerEnabled) {
+      new Notice("Reader files verified. Starting the engine.");
+      void this.plugin.reader?.enable();
+    } else {
+      new Notice("Reader files verified. Enable the reader in settings to start.");
+    }
+    window.setTimeout(() => this.close(), 1200);
+  }
+
+  // One import at a time: a 5 GB model takes minutes, and the 3 s poll must
+  // not start a second copy of the same file mid-import.
+  private busy = false;
+
+  private async scan(dir: string): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      const results = await importFromFolder(
+        dir,
+        (key) => this.tried.has(key),
+        (label, done, total) => {
+          this.watchEl?.setText(total > 1 ? `${label} ${Math.round((done / total) * 100)}%` : `${label}…`);
+        },
+      );
+      for (const r of results) {
+        this.tried.add(r.key);
+        this.log(`${r.outcome.ok ? "✓" : "✗"} ${r.outcome.file}: ${r.outcome.note}`);
+      }
+      if (results.length > 0) this.renderItems();
+    } finally {
+      this.busy = false;
+    }
+    if (this.timer !== null) this.watchEl?.setText(`Watching ${dir} — files import automatically as they finish.`);
+    this.finishIfComplete();
+  }
+
+  onOpen(): void {
+    this.titleEl.setText("Reader offline setup");
+    const c = this.contentEl;
+    c.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "For networks that block the plugin's downloads. Your browser fetches the files instead (it usually gets through), and everything after that is automatic: each file is verified and installed the moment the download finishes.",
+    });
+
+    new Setting(c)
+      .setName("1. Fetch the files")
+      .setDesc("Opens every missing file in your browser. You can also open the links yourself, or download them on another computer and drop them into your Downloads folder here.")
+      .addButton((b) =>
+        b
+          .setCta()
+          .setButtonText("Open downloads in browser")
+          .onClick(() => {
+            if (this.opening) return;
+            const missing = offlineItems(this.rung()).filter((i) => !i.present);
+            if (missing.length === 0) {
+              new Notice("Nothing is missing.");
+              return;
+            }
+            this.opening = true;
+            missing.forEach((it, i) => {
+              window.setTimeout(() => {
+                window.open(it.url);
+                if (i === missing.length - 1) this.opening = false;
+              }, i * 500);
+            });
+          }),
+      )
+      .addButton((b) =>
+        b.setButtonText("Copy links").onClick(() => {
+          const missing = offlineItems(this.rung()).filter((i) => !i.present);
+          const urls = (missing.length > 0 ? missing : offlineItems(this.rung())).map((i) => i.url);
+          void navigator.clipboard.writeText(urls.join("\n"));
+          new Notice("Download links copied.");
+        }),
+      );
+    this.itemsEl = c.createEl("ul", { cls: "setting-item-description" });
+    this.renderItems();
+
+    new Setting(c)
+      .setName("2. Wait")
+      .setDesc("Imports run by themselves; nothing else to click. Renamed downloads are fine, and wrong files are refused.");
+    this.watchEl = c.createEl("p", { cls: "setting-item-description" });
+    this.logEl = c.createEl("div", { cls: "setting-item-description" });
+
+    const picker = c.createEl("input", { type: "file" });
+    picker.multiple = true;
+    picker.accept = ".tgz,.gz,.gguf";
+    picker.hidden = true;
+    picker.onchange = async () => {
+      const files = Array.from(picker.files ?? []);
+      picker.value = "";
+      if (files.length === 0) return;
+      if (this.busy) {
+        new Notice("An import is already running; it finishes first.");
+        return;
+      }
+      this.busy = true;
+      const results = await importAssetFiles(
+        files.map((f) => ({ name: f.name, size: f.size, stream: () => f.stream() })),
+        (label, done, total) => {
+          this.watchEl?.setText(total > 1 ? `${label} ${Math.round((done / total) * 100)}%` : `${label}…`);
+        },
+      );
+      this.busy = false;
+      for (const r of results) this.log(`${r.ok ? "✓" : "✗"} ${r.file}: ${r.note}`);
+      this.renderItems();
+      this.finishIfComplete();
+    };
+    const alt = c.createEl("p", { cls: "setting-item-description" });
+    alt.appendText("Files somewhere else? ");
+    const altBtn = alt.createEl("a", { text: "Import them by hand" });
+    altBtn.onclick = () => picker.click();
+
+    const dir = downloadsDir();
+    this.watchEl.setText(`Watching ${dir} — files import automatically as they finish.`);
+    void this.scan(dir);
+    this.timer = window.setInterval(() => void this.scan(dir), 3000);
+  }
+
+  onClose(): void {
+    if (this.timer !== null) window.clearInterval(this.timer);
+    this.timer = null;
+    this.contentEl.empty();
   }
 }

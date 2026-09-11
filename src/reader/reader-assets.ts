@@ -447,6 +447,57 @@ function importEngineTarball(c: ImportCandidate, raw: Uint8Array): ImportOutcome
   return { file: c.name, ok: true, note: `engine binaries (${name.split("/")[1]}) installed and verified` };
 }
 
+// The browser's default download location, where the guided setup watches
+// for the files it asked the browser to fetch.
+export function downloadsDir(): string {
+  const os = require("node:os") as typeof import("os");
+  const path = require("node:path") as typeof import("path");
+  return path.join(os.homedir(), "Downloads");
+}
+
+// Scan a folder for reader files and import what verifies. `skip` lets the
+// caller remember already-tried files (keyed by path|size|mtime, so a file
+// that was still downloading is retried once it changes). In-progress
+// browser downloads (.crdownload/.part/.download) are ignored; a partial
+// GGUF never matches its pinned byte size, so it is never picked up early.
+export async function importFromFolder(
+  dir: string,
+  skip: (key: string) => boolean,
+  progress: AssetProgress,
+): Promise<{ key: string; outcome: ImportOutcome }[]> {
+  const f = fs();
+  const path = pathMod();
+  const fsx = require("node:fs") as typeof import("fs");
+  const streamMod = require("node:stream") as typeof import("stream");
+  if (!f.existsSync(dir)) return [];
+  const results: { key: string; outcome: ImportOutcome }[] = [];
+  for (const name of fsx.readdirSync(dir)) {
+    if (/\.(crdownload|part|download|tmp)$/i.test(name)) continue;
+    const p = path.join(dir, name);
+    let st: { size: number; mtimeMs: number };
+    try {
+      const s = fsx.statSync(p);
+      if (!s.isFile()) continue;
+      st = { size: s.size, mtimeMs: s.mtimeMs };
+    } catch {
+      continue;
+    }
+    const isModel = Object.values(GGUF_PIN).some((g) => g.bytes === st.size);
+    const isTarball = /\.(tgz|tar\.gz|gz)$/i.test(name) && st.size > 0 && st.size <= 200 * 1024 * 1024;
+    if (!isModel && !isTarball) continue;
+    const key = `${p}|${st.size}|${Math.round(st.mtimeMs)}`;
+    if (skip(key)) continue;
+    const outcome = (
+      await importAssetFiles(
+        [{ name, size: st.size, stream: () => streamMod.Readable.toWeb(fsx.createReadStream(p)) as ReadableStream<Uint8Array> }],
+        progress,
+      )
+    )[0];
+    results.push({ key, outcome });
+  }
+  return results;
+}
+
 export async function importAssetFiles(files: ImportCandidate[], progress: AssetProgress): Promise<ImportOutcome[]> {
   const f = fs();
   const path = pathMod();
