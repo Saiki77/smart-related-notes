@@ -1465,25 +1465,23 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     host: HTMLElement,
     name: string,
     desc: string,
-    opts: { min: number; max: number; step: number; value: number; fmt?: (v: number) => string },
+    opts: { min: number; max: number; step: number; value: number },
     apply: (v: number) => void,
   ): void {
-    const fmt = opts.fmt ?? ((v: number) => String(v));
-    const setting = new Setting(host).setName(name).setDesc(desc);
-    const valueEl = setting.controlEl.createSpan({
-      cls: "related-notes-slider-value",
-      text: fmt(opts.value),
-    });
-    setting.addSlider((s) =>
-      s
-        .setLimits(opts.min, opts.max, opts.step)
-        .setValue(opts.value)
-        .onChange((v) => {
-          apply(v);
-          valueEl.setText(fmt(v));
-          this.debouncedSave();
-        }),
-    );
+    // No custom value readout: the slider's own display and drag tooltip
+    // carry the value. A second readout doubled it (until 4.0.4).
+    new Setting(host)
+      .setName(name)
+      .setDesc(desc)
+      .addSlider((s) =>
+        s
+          .setLimits(opts.min, opts.max, opts.step)
+          .setValue(opts.value)
+          .onChange((v) => {
+            apply(v);
+            this.debouncedSave();
+          }),
+      );
   }
 
   // A toggle row that persists immediately.
@@ -1640,7 +1638,6 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         max: 0.9,
         step: 0.05,
         value: this.plugin.settings.minSimilarity,
-        fmt: (v) => v.toFixed(2),
       },
       (v) => (this.plugin.settings.minSimilarity = v),
     );
@@ -1757,7 +1754,6 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         max: 0.9,
         step: 0.05,
         value: this.plugin.settings.newNoteMinSimilarity,
-        fmt: (v) => v.toFixed(2),
       },
       (v) => (this.plugin.settings.newNoteMinSimilarity = v),
     );
@@ -1878,7 +1874,6 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         max: 0.6,
         step: 0.05,
         value: this.plugin.settings.ideaInfluence,
-        fmt: (v) => v.toFixed(2),
       },
       (v) => (this.plugin.settings.ideaInfluence = v),
     );
@@ -1892,7 +1887,6 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         max: 1,
         step: 0.1,
         value: this.plugin.settings.graphInfluence,
-        fmt: (v) => v.toFixed(1),
       },
       (v) => (this.plugin.settings.graphInfluence = v),
     );
@@ -1906,7 +1900,6 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         max: 0.3,
         step: 0.01,
         value: this.plugin.settings.structureInfluence,
-        fmt: (v) => v.toFixed(2),
       },
       (v) => (this.plugin.settings.structureInfluence = v),
     );

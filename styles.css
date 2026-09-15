@@ -314,13 +314,6 @@
 }
 
 /* Settings: show the numeric value next to each slider. */
-.related-notes-slider-value {
-  min-width: 3.5em;
-  margin-right: 10px;
-  text-align: right;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
 
 /* =============================================================================
    Feature A — inline glow (CodeMirror 6 Decoration.mark).
@@ -656,9 +649,6 @@
 }
 .rn-sec-title {
   font-size: var(--font-ui-medium);
-}
-.rn-sec > *:not(.rn-sec-summary) {
-  margin-left: 0.35em;
 }
 .rn-sec[open] {
   padding-bottom: var(--size-4-2);
