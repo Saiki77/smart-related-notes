@@ -47,12 +47,14 @@
   gap: var(--size-2-2);
 }
 .related-notes-view .rn-search-toggle,
-.related-notes-view .rn-links-toggle {
+.related-notes-view .rn-links-toggle,
+.related-notes-view .rn-pin-toggle {
   color: var(--text-muted);
   cursor: pointer;
 }
-/* Active mode (e.g. linked-notes mode on) reads as accent so the toggle's state is clear. */
-.related-notes-view .rn-links-toggle.is-active {
+/* Active mode (e.g. linked-notes mode on, or a pinned source) reads as accent so the toggle's state is clear. */
+.related-notes-view .rn-links-toggle.is-active,
+.related-notes-view .rn-pin-toggle.is-active {
   color: var(--interactive-accent);
 }
 .related-notes-view .rn-search-row {
