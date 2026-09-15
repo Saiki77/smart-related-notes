@@ -144,6 +144,16 @@ export class RelatedNotesView extends ItemView {
 
     this.listEl = root.createDiv({ cls: "rn-list" });
 
+    // Restore a persisted pin (opt-in setting), resolved by path once here;
+    // from then on the pin tracks the TFile instance as usual. A path that
+    // does not resolve is skipped, not cleared: during a slow startup the
+    // vault may simply not be done loading, and a genuinely deleted note's
+    // stored path is overwritten by the next pin anyway.
+    if (this.plugin.settings.pinPersist && this.plugin.settings.pinnedPath) {
+      const f = this.app.vault.getAbstractFileByPath(this.plugin.settings.pinnedPath);
+      if (f instanceof TFile && f.extension === "md") this.setPin(f);
+    }
+
     // Live status line: track the index store's progress.
     this.unsubscribe = this.plugin.store.onProgress((p) => this.renderStatus(p));
     this.renderStatus(this.plugin.store.getProgress());
@@ -200,10 +210,24 @@ export class RelatedNotesView extends ItemView {
   private anchorFile(): TFile | null {
     if (this.pinnedFile) {
       const current = this.app.vault.getAbstractFileByPath(this.pinnedFile.path);
-      if (current === this.pinnedFile) return this.pinnedFile;
+      if (current === this.pinnedFile) {
+        this.persistPin();
+        return this.pinnedFile;
+      }
       this.setPin(null);
     }
     return this.app.workspace.getActiveFile();
+  }
+
+  // Keep the stored path in step with the pin when persistence is on: set or
+  // cleared with the pin, refreshed after a rename, and written when the
+  // setting is turned on while a pin is already held. No-op otherwise.
+  private persistPin(): void {
+    const stored = this.pinnedFile && this.plugin.settings.pinPersist ? this.pinnedFile.path : "";
+    if (this.plugin.settings.pinnedPath !== stored) {
+      this.plugin.settings.pinnedPath = stored;
+      void this.plugin.saveSettings();
+    }
   }
 
   private setPin(file: TFile | null): void {
@@ -213,6 +237,7 @@ export class RelatedNotesView extends ItemView {
       "aria-label",
       file ? `Pinned to ${file.basename} (click to unpin)` : "Pin the panel to the current note",
     );
+    this.persistPin();
   }
 
   private togglePin(): void {

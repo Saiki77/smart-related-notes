@@ -105,6 +105,8 @@ export interface RelatedNotesSettings {
   structureInfluence: number; // B_MAX for the hybrid structural boost (0..0.3)
   showSummary: boolean; // keyphrase topic-label line (supersedes snippet when on)
   showRecency: boolean; // muted "edited Nd ago" line
+  pinPersist: boolean; // keep the panel's pinned note across restarts
+  pinnedPath: string; // internal: last pinned note path (only meaningful with pinPersist)
   maxChunks: number; // body-chunk cap (advanced)
   shortlistSize: number; // Stage-1 -> Stage-2 funnel width (advanced)
   headingContext: boolean; // prefix each section's first chunk with a heading breadcrumb
@@ -154,6 +156,8 @@ export const DEFAULT_SETTINGS: RelatedNotesSettings = {
   structureInfluence: 0.15,
   showSummary: true,
   showRecency: false,
+  pinPersist: false,
+  pinnedPath: "",
   maxChunks: 48,
   shortlistSize: 60,
   headingContext: true,
@@ -1626,6 +1630,19 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       "Add a muted “edited Nd ago” line to each card.",
       this.plugin.settings.showRecency,
       (v) => (this.plugin.settings.showRecency = v),
+    );
+
+    this.toggle(
+      host,
+      "Remember the pin across restarts",
+      "Keep the panel's pinned note when Obsidian restarts. Off: the pin clears on startup.",
+      this.plugin.settings.pinPersist,
+      (v) => {
+        this.plugin.settings.pinPersist = v;
+        if (!v) this.plugin.settings.pinnedPath = "";
+        // If a pin is currently set, the next render stores it (anchorFile sync).
+        this.plugin.getView()?.requestRender();
+      },
     );
   }
 
