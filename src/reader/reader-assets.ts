@@ -439,7 +439,22 @@ export async function importFromFolder(
 ): Promise<{ key: string; outcome: ImportOutcome }[]> {
   if (!fs.existsSync(dir)) return [];
   const results: { key: string; outcome: ImportOutcome }[] = [];
-  for (const name of fs.readdirSync(dir)) {
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch (e) {
+    // macOS gates ~/Downloads behind a per-app permission; without it the
+    // scan throws EPERM. Surface that as a readable outcome instead of an
+    // uncaught error, so the modal can point at the fix.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/EPERM|EACCES/.test(msg)) {
+      throw new Error(
+        `Obsidian has no permission to read ${dir}. Grant it under System Settings > Privacy and Security > Files and Folders, or use "Import them by hand" below.`,
+      );
+    }
+    throw e;
+  }
+  for (const name of names) {
     if (/\.(crdownload|part|download|tmp)$/i.test(name)) continue;
     const p = path.join(dir, name);
     let st: { size: number; mtimeMs: number };

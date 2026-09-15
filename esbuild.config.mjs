@@ -100,6 +100,33 @@ const inlineWorkerPlugin = {
 // to the reader's asset folder at first enable, so the release stays the
 // classic three files and a manual install cannot miss it; llama/ data and
 // bins/ binaries are fetched separately (see src/reader/reader-assets.ts).
+// The engine module is loaded through a blob: URL (Obsidian's renderer
+// refuses import() of file:// URLs), which means CHROMIUM's module loader
+// evaluates it: bare and node: import specifiers cannot appear in the output.
+// This plugin routes every node builtin (and the optional @reflink native
+// dep) through globalThis.__srnRequire, which the plugin sets to Electron's
+// require before importing. esbuild's CJS interop turns the shims' exports
+// into named imports transparently.
+const readerNodeShim = {
+  name: "reader-node-shim",
+  setup(build) {
+    const builtins = new Set(builtinModules);
+    build.onResolve({ filter: /^(node:|@reflink\/)/ }, (args) => ({
+      path: args.path,
+      namespace: "srn-node-shim",
+    }));
+    build.onResolve({ filter: /^[^./]/ }, (args) =>
+      builtins.has(args.path) ? { path: `node:${args.path}`, namespace: "srn-node-shim" } : undefined,
+    );
+    build.onLoad({ filter: /.*/, namespace: "srn-node-shim" }, (args) => ({
+      loader: "js",
+      contents: args.path.startsWith("@reflink/")
+        ? `try { module.exports = globalThis.__srnRequire(${JSON.stringify(args.path)}); } catch (e) { module.exports = {}; }`
+        : `module.exports = globalThis.__srnRequire(${JSON.stringify(args.path)});`,
+    }));
+  },
+};
+
 async function bundleReaderEngine() {
   const result = await esbuild.build({
     entryPoints: ["src/reader/engine-entry.mjs"],
@@ -107,10 +134,13 @@ async function bundleReaderEngine() {
     platform: "node",
     format: "esm",
     target: "es2022",
-    external: ["@node-llama-cpp/*", "@reflink/*"],
-    banner: {
-      js: "import { createRequire as __nlcRequire } from 'node:module'; const require = __nlcRequire(import.meta.url);",
-    },
+    external: ["@node-llama-cpp/*"],
+    plugins: [readerNodeShim],
+    // The module executes from a blob: URL, but every path derived from
+    // import.meta.url must point at the staged file on disk; the loader sets
+    // this global to the real file URL before importing.
+    define: { "import.meta.url": "globalThis.__srnReaderEngineUrl" },
+    banner: { js: "const require = globalThis.__srnRequire;" },
     write: false,
     minify: prod,
     metafile: true,

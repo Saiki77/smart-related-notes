@@ -1,9 +1,14 @@
-// Native reader backend: loads the engine bundle via dynamic import() and
-// manages the model lifecycle (load on demand, unload after idle). The
-// import() below stays a REAL dynamic import in the CJS main bundle
-// (esbuild's supported["dynamic-import"] flag keeps it untransformed),
-// because the engine bundle is ESM with top-level await and cannot be
-// require()d.
+// Native reader backend: loads the engine bundle and manages the model
+// lifecycle (load on demand, unload after idle). The bundle is ESM with
+// top-level await, so it must go through a real dynamic import() (esbuild's
+// supported["dynamic-import"] keeps it untransformed in the CJS build), and
+// Obsidian's renderer refuses import() of file:// URLs, so the staged file
+// is read from disk and imported as a blob: module. Two globals bridge the
+// gap: __srnReaderEngineUrl carries the real on-disk URL (the bundle's
+// import.meta.url is compiled to it, so llama.cpp finds its data and
+// binaries beside the staged file), and __srnRequire hands the bundle
+// Electron's require for node builtins.
+import fsp from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { bundlePath, modelPath, RungSpec } from "./reader-assets";
 
@@ -42,9 +47,20 @@ export class ReaderEngine {
     if (this.engine) return this.engine;
     if (this.loading) return this.loading;
     this.loading = (async () => {
+      let blobUrl: string | null = null;
       try {
-        // eslint-disable-next-line no-unsanitized/method -- the URL is built from the plugin's own asset root (bundlePath), never from vault or network content
-        const mod = (await import(pathToFileURL(bundlePath()).href)) as EngineModule;
+        const source = await fsp.readFile(bundlePath(), "utf8");
+        // The globals are read by the engine module itself, which Chromium
+        // evaluates in the main window realm; window IS that realm's global.
+        const g = window as typeof window & {
+          __srnReaderEngineUrl?: string;
+          __srnRequire?: NodeJS.Require;
+        };
+        g.__srnReaderEngineUrl = pathToFileURL(bundlePath()).href;
+        g.__srnRequire = window.require;
+        blobUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+        // eslint-disable-next-line no-unsanitized/method -- a blob: URL of the plugin's own staged engine bundle, never vault or network content
+        const mod = (await import(blobUrl)) as EngineModule;
         const e = await mod.createReaderEngine(modelPath(this.rung), { noThink: this.rung.noThink });
         this.engine = e;
         this.gpu = e.gpu;
@@ -54,6 +70,7 @@ export class ReaderEngine {
         this.lastError = err instanceof Error ? err.message : String(err);
         throw err;
       } finally {
+        if (blobUrl !== null) URL.revokeObjectURL(blobUrl);
         this.loading = null;
       }
     })();

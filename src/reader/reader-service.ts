@@ -179,6 +179,11 @@ export class ReaderService {
       this.host.requestRender();
     } catch (e) {
       console.warn("[related-notes] reader:", e);
+      // A failing engine load would otherwise retry silently forever while
+      // the status row keeps saying "reading". Surface it.
+      if (this.engine?.lastError) {
+        this.setStatus({ state: "error", detail: this.engine.lastError, pct: null });
+      }
     } finally {
       this.busy = false;
     }

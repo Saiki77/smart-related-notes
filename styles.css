@@ -653,3 +653,15 @@
 .rn-sec[open] {
   padding-bottom: var(--size-4-2);
 }
+
+/* Breathing room inside sections: themes that card each row keep their look,
+   the content just stops hugging the edges. */
+.rn-sec .setting-item {
+  padding: 0.85em 0.8em;
+}
+.rn-sec[open] > .rn-sec-summary {
+  margin-bottom: 0.4em;
+}
+.rn-sec .setting-item-description {
+  margin-top: 0.2em;
+}

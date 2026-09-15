@@ -16,6 +16,7 @@ import {
   requestUrl,
   debounce,
   getAllTags,
+  setTooltip,
   type Editor,
   type Debouncer,
 } from "obsidian";
@@ -1465,12 +1466,12 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     host: HTMLElement,
     name: string,
     desc: string,
-    opts: { min: number; max: number; step: number; value: number },
+    opts: { min: number; max: number; step: number; value: number; def?: number },
     apply: (v: number) => void,
   ): void {
-    // No custom value readout: the slider's own display and drag tooltip
-    // carry the value. A second readout doubled it (until 4.0.4).
-    new Setting(host)
+    // No custom value readout: the slider's own display carries the value.
+    // A second readout doubled it (until 4.0.4).
+    const setting = new Setting(host)
       .setName(name)
       .setDesc(desc)
       .addSlider((s) =>
@@ -1482,6 +1483,9 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
             this.debouncedSave();
           }),
       );
+    if (opts.def !== undefined) {
+      setTooltip(setting.infoEl, `Default: ${opts.def}. Range ${opts.min} to ${opts.max}.`);
+    }
   }
 
   // A toggle row that persists immediately.
@@ -1491,8 +1495,9 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     desc: string,
     value: boolean,
     apply: (v: boolean) => void,
+    def?: boolean,
   ): void {
-    new Setting(host)
+    const setting = new Setting(host)
       .setName(name)
       .setDesc(desc)
       .addToggle((t) =>
@@ -1501,6 +1506,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }),
       );
+    if (def !== undefined) setTooltip(setting.infoEl, `Default: ${def ? "on" : "off"}`);
   }
 
   // A multi-line folder/namespace list that marks the title index dirty when the
@@ -1569,12 +1575,13 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         b.setButtonText("Best quality").onClick(() => void this.applyProfile("best")),
       );
 
-    new Setting(host)
+    const modelSetting = new Setting(host)
       .setName("Model")
       .setDesc(
         "MiniLM is the fast default. jina-v5-nano is the strongest here (a ~250 MB, non-commercial download). Changing this re-embeds the vault.",
-      )
-      .addDropdown((d) => {
+      );
+    setTooltip(modelSetting.infoEl, "Default: MiniLM (default, fast)");
+    modelSetting.addDropdown((d) => {
         for (const [id, label] of Object.entries(MODEL_OPTIONS)) d.addOption(id, label);
         // Allow a custom id the dropdown doesn't list.
         if (!(this.plugin.settings.modelId in MODEL_OPTIONS)) {
@@ -1616,6 +1623,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       "A one-time popup with the highlights of a feature release. Never shown twice, never for small fixes.",
       this.plugin.settings.showWhatsNew,
       (v) => (this.plugin.settings.showWhatsNew = v),
+      true,
     );
   }
 
@@ -1625,7 +1633,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       host,
       "Number of results",
       "How many related notes the card stack shows.",
-      { min: 4, max: 30, step: 1, value: this.plugin.settings.topK },
+      { min: 4, max: 30, step: 1, value: this.plugin.settings.topK, def: 12 },
       (v) => (this.plugin.settings.topK = v),
     );
 
@@ -1637,7 +1645,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         min: 0,
         max: 0.9,
         step: 0.05,
-        value: this.plugin.settings.minSimilarity,
+        value: this.plugin.settings.minSimilarity, def: 0.2,
       },
       (v) => (this.plugin.settings.minSimilarity = v),
     );
@@ -1648,6 +1656,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       "Show a short topic label on each card, extracted locally. Rebuilds the index.",
       this.plugin.settings.showSummary,
       (v) => (this.plugin.settings.showSummary = v),
+      true,
     );
 
     this.toggle(
@@ -1656,6 +1665,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       "Show a one- to two-line preview. Used when the summary line is off.",
       this.plugin.settings.showSnippet,
       (v) => (this.plugin.settings.showSnippet = v),
+      true,
     );
 
     this.toggle(
@@ -1664,6 +1674,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       "Add a muted “edited Nd ago” line to each card.",
       this.plugin.settings.showRecency,
       (v) => (this.plugin.settings.showRecency = v),
+      false,
     );
 
     this.toggle(
@@ -1677,6 +1688,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         // If a pin is currently set, the next render stores it (anchorFile sync).
         this.plugin.getView()?.requestRender();
       },
+      false,
     );
   }
 
@@ -1688,6 +1700,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       "Glow the first mention of a concept that already has a note. Click the glow to make it a [[wikilink]].",
       this.plugin.settings.glowEnabled,
       (v) => (this.plugin.settings.glowEnabled = v),
+      true,
     );
 
     this.toggle(
@@ -1696,6 +1709,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       "Skip the glow in raw source mode.",
       this.plugin.settings.glowRestrictToLivePreview,
       (v) => (this.plugin.settings.glowRestrictToLivePreview = v),
+      true,
     );
 
     this.toggle(
@@ -1704,6 +1718,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       "Also glow a phrase owned by more than one note. Off for precision.",
       this.plugin.settings.glowAmbiguous,
       (v) => (this.plugin.settings.glowAmbiguous = v),
+      false,
     );
 
     this.toggle(
@@ -1712,6 +1727,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       "Once a note is linked here, link its remaining mentions in this note while you're idle.",
       this.plugin.settings.autoLinkSubsequent,
       (v) => (this.plugin.settings.autoLinkSubsequent = v),
+      false,
     );
 
     this.toggle(
@@ -1720,6 +1736,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       "Rank [[ completions by meaning, not just by name.",
       this.plugin.settings.suggesterEnabled,
       (v) => (this.plugin.settings.suggesterEnabled = v),
+      true,
     );
 
     new Setting(host)
@@ -1743,6 +1760,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       "Offer to create a note for a strongly-relevant concept that doesn't have one yet.",
       this.plugin.settings.suggestNewNotes,
       (v) => (this.plugin.settings.suggestNewNotes = v),
+      true,
     );
 
     this.slider(
@@ -1753,7 +1771,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         min: 0,
         max: 0.9,
         step: 0.05,
-        value: this.plugin.settings.newNoteMinSimilarity,
+        value: this.plugin.settings.newNoteMinSimilarity, def: 0.45,
       },
       (v) => (this.plugin.settings.newNoteMinSimilarity = v),
     );
@@ -1873,7 +1891,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         min: 0,
         max: 0.6,
         step: 0.05,
-        value: this.plugin.settings.ideaInfluence,
+        value: this.plugin.settings.ideaInfluence, def: 0.3,
       },
       (v) => (this.plugin.settings.ideaInfluence = v),
     );
@@ -1886,7 +1904,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         min: 0,
         max: 1,
         step: 0.1,
-        value: this.plugin.settings.graphInfluence,
+        value: this.plugin.settings.graphInfluence, def: 1,
       },
       (v) => (this.plugin.settings.graphInfluence = v),
     );
@@ -1899,7 +1917,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         min: 0,
         max: 0.3,
         step: 0.01,
-        value: this.plugin.settings.structureInfluence,
+        value: this.plugin.settings.structureInfluence, def: 0.15,
       },
       (v) => (this.plugin.settings.structureInfluence = v),
     );
@@ -1910,13 +1928,14 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       "Embed each note as several chunks instead of one vector, far better on long notes. Rebuilds the index.",
       this.plugin.settings.chunking,
       (v) => (this.plugin.settings.chunking = v),
+      true,
     );
 
     this.slider(
       host,
       "Max chunks per note",
       "Ceiling on chunks embedded per note. Only very long notes reach it. Rebuilds the index.",
-      { min: 8, max: 64, step: 1, value: this.plugin.settings.maxChunks },
+      { min: 8, max: 64, step: 1, value: this.plugin.settings.maxChunks, def: 48 },
       (v) => (this.plugin.settings.maxChunks = v),
     );
 
@@ -1926,13 +1945,14 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       "Prefix each section with its heading breadcrumb when embedding. Rebuilds the index.",
       this.plugin.settings.headingContext,
       (v) => (this.plugin.settings.headingContext = v),
+      true,
     );
 
     this.slider(
       host,
       "Shortlist size",
       "How many candidates get the precise chunk comparison on each note switch.",
-      { min: 20, max: 150, step: 10, value: this.plugin.settings.shortlistSize },
+      { min: 20, max: 150, step: 10, value: this.plugin.settings.shortlistSize, def: 60 },
       (v) => (this.plugin.settings.shortlistSize = v),
     );
 
@@ -1982,7 +2002,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
 
   private readerSection(host: HTMLElement): void {
     const save = (): void => {
-      this.debouncedSave.run();
+      this.debouncedSave();
       this.plugin.applyReaderSettings();
     };
     host.createEl("p", {
@@ -2004,12 +2024,13 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         }),
       );
 
-    new Setting(host)
+    const rungSetting = new Setting(host)
       .setName("Model")
       .setDesc(
         "Auto picks by memory: large on big machines (~4.8 GB download, needs ~6 GB free), mid on 16 GB (~2.5 GB), small below that (~1.3 GB). The small model labels notes but cannot judge; judgment features stay off on it.",
-      )
-      .addDropdown((d) => {
+      );
+    setTooltip(rungSetting.infoEl, "Default: Auto (by this machine's memory)");
+    rungSetting.addDropdown((d) => {
         d.addOption("auto", "Auto (by this machine's memory)");
         for (const r of RUNGS) d.addOption(r.id, r.label);
         d.setValue(this.plugin.settings.readerRung).onChange((v) => {
@@ -2018,10 +2039,11 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(host)
+    const paceSetting = new Setting(host)
       .setName("Reading pace")
-      .setDesc("How often the reader picks up the next note during idle time. It always pauses while you type and while indexing runs.")
-      .addDropdown((d) =>
+      .setDesc("How often the reader picks up the next note during idle time. It always pauses while you type and while indexing runs.");
+    setTooltip(paceSetting.infoEl, "Default: Balanced");
+    paceSetting.addDropdown((d) =>
         d
           .addOption("light", "Light")
           .addOption("balanced", "Balanced")
@@ -2093,7 +2115,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         .addButton((b) =>
           b.setButtonText("Remove downloads").onClick(() => {
             this.plugin.settings.readerEnabled = false;
-            this.debouncedSave.run();
+            this.debouncedSave();
             this.plugin.applyReaderSettings();
             void this.plugin.reader?.disable().then(() => {
               removeAssets();
@@ -2190,10 +2212,17 @@ class ReaderOfflineModal extends Modal {
         this.log(`${r.outcome.ok ? "✓" : "✗"} ${r.outcome.file}: ${r.outcome.note}`);
       }
       if (results.length > 0) this.renderItems();
+    } catch (e) {
+      // Typically the macOS Downloads permission; stop polling and say so.
+      if (this.timer !== null) window.clearInterval(this.timer);
+      this.timer = null;
+      this.watchEl?.setText(e instanceof Error ? e.message : String(e));
+      this.busy = false;
+      return;
     } finally {
       this.busy = false;
     }
-    if (this.timer !== null) this.watchEl?.setText(`Watching ${dir} — files import automatically as they finish.`);
+    if (this.timer !== null) this.watchEl?.setText(`Watching ${dir}. Files import automatically as they finish.`);
     this.finishIfComplete();
   }
 
