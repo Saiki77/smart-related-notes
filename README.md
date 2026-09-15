@@ -23,6 +23,29 @@ model download it works **fully offline**, and it understands German, English an
 [How it works](#how-it-works) &nbsp;·&nbsp; [Settings](#settings)
 &nbsp;·&nbsp; [Install](#install)
 
+## What's new in 4.0
+
+The plugin gained a **reader**: a small local text model that quietly reads your
+notes in the background and improves what the panel shows. It writes a one-line
+summary for every note (shown under the card title, with a fuller two-sentence
+summary on hover) and suggests tags for the active note, picked only from tags
+your vault already uses, shown as ghost chips you can add with one click.
+
+Like the embeddings, it is invisible infrastructure: it works only while
+Obsidian is idle, pauses when you type or when indexing runs, caches everything,
+and re-reads a note only when its content changes. It is **off by default**;
+enabling it downloads the engine and a model sized to your machine's memory (a
+large, mid or small Qwen3, roughly 1 to 5 GB), stored outside the vault so sync
+never sees it. Everything runs on your machine through llama.cpp inside the
+plugin itself: no cloud, no account, no second app. On networks that block
+downloads there is a guided offline setup (command palette: "Reader: offline
+setup") that fetches the files through your browser and imports them
+automatically, verified against pinned checksums.
+
+Also in 4.0: the insights report's surprising-connections section is gone. It
+generated a list that was rarely used; the link-graph machinery behind it stays
+in the ranking itself, where it earns its keep.
+
 ## What's new in 3.0
 
 <p align="center">
@@ -41,7 +64,7 @@ links you make point somewhere similarity structurally cannot look.
   <img src="docs/roadmap.svg" alt="Roadmap: 3.0 shipped link-graph ranking, surprising connections, the vault map and template de-crowding; 4.0 brings search by category, semantic views in Bases, link suggestions with receipts and a ranker built from independent channels; 5.0 explores behavioural signals, vaults of a hundred thousand notes, notes that disagree and help while you write" width="880">
 </p>
 
-**Next, in 4.0.** Asking the vault questions, and letting other tools use what it
+**Next.** Asking the vault questions, and letting other tools use what it
 knows:
 
 - **Search by category**: ask for "characters" and get the characters, not the note

@@ -217,3 +217,30 @@ When there are no tags and no links, seeds come from **spherical k-means cluster
 discovered over the centered note means (computed on idle, kept fresh incrementally),
 so the feature still works on pure prose. Tags, links and hubs only **sharpen** it;
 they are never required. This is **in design**, not yet shipped.
+
+## 6. The reader (4.0)
+
+Alongside the embeddings, the plugin can run a small **generative text model**
+locally: llama.cpp loaded in-process through its Node bindings, with GGUF weights
+sized to the machine (Qwen3 8B, 4B or 1.7B, picked by a memory probe, overridable).
+Everything lives outside the vault under `~/.cache/smart-related-notes/reader/`;
+the engine binaries and weights are downloaded on first enable, checksum-verified,
+and can also be imported from browser downloads on networks that block the plugin
+(the guided offline setup).
+
+Its design rule is the same as the embeddings': **invisible infrastructure**. The
+reader never fronts its own prose beyond one-line summaries, short gists and small
+labels; its real jobs are selection and verification of what the other channels
+nominate. Each use is a fixed task with a budgeted input built from the index (not
+raw notes), a strict output validator, and a cache keyed to the note's content, so
+a note is read once per change. The scheduler runs only while Obsidian is idle and
+yields to typing and indexing.
+
+Abilities are gated **per model size, by measurement**: closed-set tag picking
+works on every rung (top-1 precision 0.94 / 0.88 / 0.81 on 8B / 4B / 1.7B against
+held-out real tags, zero invented); judgment tasks (does this passage answer that
+question, or merely restate it?) hold up on the 8B and the 4B and collapse on the
+1.7B, so the small rung simply does not offer them. The judged quality of the
+summaries ties between the 8B and the 4B (9.2 of 10, blind three-judge panel),
+which is why the mid rung is the value pick and the 8B the default only where
+memory allows it.
