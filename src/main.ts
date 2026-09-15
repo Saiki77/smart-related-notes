@@ -20,6 +20,7 @@ import {
   type Debouncer,
 } from "obsidian";
 import { ReaderService, type ReaderHost, type ReaderPace } from "./reader/reader-service";
+import { WhatsNewModal, WHATS_NEW_ID } from "./whats-new";
 import {
   RUNGS,
   removeAssets,
@@ -107,6 +108,8 @@ export interface RelatedNotesSettings {
   showRecency: boolean; // muted "edited Nd ago" line
   pinPersist: boolean; // keep the panel's pinned note across restarts
   pinnedPath: string; // internal: last pinned note path (only meaningful with pinPersist)
+  showWhatsNew: boolean; // one-time highlights popup after a feature update
+  whatsNewShownId: string; // internal: WHATS_NEW_ID the user has already seen
   maxChunks: number; // body-chunk cap (advanced)
   shortlistSize: number; // Stage-1 -> Stage-2 funnel width (advanced)
   headingContext: boolean; // prefix each section's first chunk with a heading breadcrumb
@@ -158,6 +161,8 @@ export const DEFAULT_SETTINGS: RelatedNotesSettings = {
   showRecency: false,
   pinPersist: false,
   pinnedPath: "",
+  showWhatsNew: true,
+  whatsNewShownId: "",
   maxChunks: 48,
   shortlistSize: 60,
   headingContext: true,
@@ -315,6 +320,10 @@ export default class RelatedNotesPlugin extends Plugin {
     // First-run gate migration: an install with settings already saved is treated as
     // having chosen a model, so only a truly fresh install (no data.json) starts gated.
     if (saved && saved.modelChosen === undefined) this.settings.modelChosen = true;
+
+    // The what's-new popup is for UPDATES. A fresh install has nothing "new",
+    // so it is marked as seen up front and never shown the current highlights.
+    if (!saved) this.settings.whatsNewShownId = WHATS_NEW_ID;
 
     // One-time recalibration for 1.8.0 mean-centering: the old scores carried an
     // anisotropy "noise floor" (~0.4 for unrelated notes), so users had minSimilarity
@@ -560,7 +569,28 @@ export default class RelatedNotesPlugin extends Plugin {
       this.refreshTitleIndex();
       this.resolveSuggesterTakeOver();
       this.applySuggesterPrecedence();
+      this.maybeShowWhatsNew();
     });
+  }
+
+  // After a feature update, show the bundled highlights once. Slightly delayed
+  // past layout-ready so it never competes with the workspace restoring.
+  private maybeShowWhatsNew(): void {
+    if (!this.settings.showWhatsNew) return;
+    if (this.settings.whatsNewShownId === WHATS_NEW_ID) return;
+    this.settings.whatsNewShownId = WHATS_NEW_ID;
+    void this.saveData(this.settings);
+    window.setTimeout(() => {
+      new WhatsNewModal(this.app, () => this.openReaderSettingsTab()).open();
+    }, 900);
+  }
+
+  private openReaderSettingsTab(): void {
+    const setting = (
+      this.app as App & { setting?: { open(): void; openTabById(id: string): void } }
+    ).setting;
+    setting?.open();
+    setting?.openTabById(this.manifest.id);
   }
 
   onunload(): void {
@@ -1582,6 +1612,14 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
             void this.plugin.rebuildIndex();
           }),
       );
+
+    this.toggle(
+      host,
+      "Show what's new after updates",
+      "A one-time popup with the highlights of a feature release. Never shown twice, never for small fixes.",
+      this.plugin.settings.showWhatsNew,
+      (v) => (this.plugin.settings.showWhatsNew = v),
+    );
   }
 
   // --- Results panel: what the card stack shows ------------------------------

@@ -591,3 +591,22 @@
 .rn-chip-x:hover {
   color: var(--text-normal);
 }
+
+/* What's-new popup (one-time, after a feature update). */
+.rn-whatsnew .rn-whatsnew-section {
+  margin-bottom: var(--size-4-4);
+}
+.rn-whatsnew .rn-whatsnew-section h3 {
+  margin: 0 0 var(--size-2-2);
+  font-size: var(--font-ui-medium);
+}
+.rn-whatsnew .rn-whatsnew-section p {
+  margin: 0 0 var(--size-2-3);
+  color: var(--text-muted);
+}
+.rn-whatsnew .rn-whatsnew-foot {
+  padding-top: var(--size-2-3);
+  border-top: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
