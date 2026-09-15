@@ -99,12 +99,14 @@ export class ReaderService {
     }
     const rung = this.rung();
     try {
-      if (!assetsReady(rung)) {
-        this.setStatus({ state: "downloading", detail: "Preparing download", pct: null });
-        await ensureAssets(() => this.host.readEngineBundle(), rung, (label, done, total) => {
-          this.setStatus({ state: "downloading", detail: label, pct: total > 1 ? done / total : null });
-        });
-      }
+      // ALWAYS run: with everything present it is an offline no-op in
+      // milliseconds, and it is the only place that restages the engine
+      // bundle when a plugin update changed it. Gating it on assetsReady
+      // left 4.0.5/4.0.6 installs loading a stale staged engine forever.
+      this.setStatus({ state: "downloading", detail: "Checking the engine", pct: null });
+      await ensureAssets(() => this.host.readEngineBundle(), rung, (label, done, total) => {
+        this.setStatus({ state: "downloading", detail: label, pct: total > 1 ? done / total : null });
+      });
       this.engine = new ReaderEngine(rung, this.opts.idleUnloadMinutes);
       this.setStatus({ state: "ready", detail: "", pct: null });
       this.refreshCounts();
