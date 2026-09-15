@@ -111,7 +111,7 @@ const readerNodeShim = {
   name: "reader-node-shim",
   setup(build) {
     const builtins = new Set(builtinModules);
-    build.onResolve({ filter: /^(node:|@reflink\/)/ }, (args) => ({
+    build.onResolve({ filter: /^(node:|@reflink\/|electron$)/ }, (args) => ({
       path: args.path,
       namespace: "srn-node-shim",
     }));

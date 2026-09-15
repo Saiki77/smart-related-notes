@@ -235,18 +235,28 @@ export async function ensureAssets(
   const root = assetsRoot();
   fs.mkdirSync(path.join(root, "dist"), { recursive: true });
 
+  // The stamp is "<engine version>:<bundle hash>". The version part guards
+  // the npm-fetched parts (llama/, bins/); the hash part guards the staged
+  // JS bundle, so a plugin update that reworks the bundle WITHOUT a new
+  // node-llama-cpp version still restages it. (4.0.5 shipped a reworked
+  // bundle under the same engine version, and existing installs kept
+  // loading the stale staged copy.)
+  const source = await pluginBundleSource();
+  const bundleHash = crypto.createHash("sha256").update(source).digest("hex").slice(0, 16);
+  const stampWant = `${ENGINE_VERSION}:${bundleHash}`;
   const stamp = path.join(root, "engine.version");
   const current = fs.existsSync(stamp) ? fs.readFileSync(stamp).toString() : "";
-  if (current !== ENGINE_VERSION && current !== "") {
+  const currentVersion = current.split(":")[0];
+  if (currentVersion !== ENGINE_VERSION && currentVersion !== "") {
     // Engine parts from another version cannot be trusted with this bundle.
     fs.rmSync(path.join(root, "llama"), { recursive: true, force: true });
     fs.rmSync(path.join(root, "bins"), { recursive: true, force: true });
     fs.rmSync(stamp, { recursive: false, force: true });
   }
-  if (current !== ENGINE_VERSION || !fs.existsSync(bundlePath())) {
-    // Local copy out of the plugin folder; involves no network.
+  if (current !== stampWant || !fs.existsSync(bundlePath())) {
+    // Local copy out of the plugin's inlined string; involves no network.
     progress("Staging engine", 0, 1);
-    fs.writeFileSync(bundlePath(), await pluginBundleSource());
+    fs.writeFileSync(bundlePath(), source);
   }
   // Engine data + binaries: skipped entirely when an offline import (or an
   // earlier run) already put them there.
@@ -265,7 +275,7 @@ export async function ensureAssets(
     }
     if (!fs.existsSync(path.join(root, "bins"))) throw new Error("no engine binaries available for this platform");
   }
-  fs.writeFileSync(stamp, ENGINE_VERSION);
+  fs.writeFileSync(stamp, stampWant);
   await downloadGguf(rung, progress);
 }
 
