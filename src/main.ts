@@ -1554,6 +1554,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
 
     this.section("Setup", "setup", (b) => this.buildSetup(b));
     this.section("Results panel", "results", (b) => this.buildResults(b));
+    this.section("Reader", "reader", (b) => this.readerSection(b), "summaries tags model");
     this.section("Linking", "linking", (b) => this.buildLinking(b));
     this.section("Scope", "scope", (b) => this.buildScope(b));
     this.section("Engine", "engine", (b) => this.buildEngine(b), "cached models");
@@ -1944,10 +1945,9 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       (v) => (this.plugin.settings.shortlistSize = v),
     );
 
-    this.readerSection(host);
   }
 
-  // --- Reader (4.0 beta) -----------------------------------------------------
+  // --- Reader (4.0) ----------------------------------------------------------
   private readerStatusEl: HTMLElement | null = null;
 
   updateReaderStatus(): void {
@@ -1965,7 +1965,6 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       this.debouncedSave.run();
       this.plugin.applyReaderSettings();
     };
-    new Setting(host).setName("Reader (beta)").setHeading();
     host.createEl("p", {
       cls: "setting-item-description",
       text:

@@ -1,6 +1,6 @@
 {
   "name": "smart-related-notes",
-  "version": "4.0.1",
+  "version": "4.0.2",
   "description": "Surface notes ranked by local semantic similarity to the one you're reading, as a sidebar card stack.",
   "main": "main.js",
   "scripts": {
