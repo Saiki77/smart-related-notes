@@ -21,6 +21,7 @@ import {
 } from "obsidian";
 import { ReaderService, type ReaderHost, type ReaderPace } from "./reader/reader-service";
 import { WhatsNewModal, WHATS_NEW_ID } from "./whats-new";
+import readerEngineSource from "virtual:reader-engine";
 import {
   RUNGS,
   removeAssets,
@@ -195,13 +196,13 @@ export const DEFAULT_SETTINGS: RelatedNotesSettings = {
 // better than retrieval models for this use case.
 const MODEL_OPTIONS: Record<string, string> = {
   "Xenova/paraphrase-multilingual-MiniLM-L12-v2":
-    "MiniLM-L12 multilingual — best for related notes, fast (default)",
+    "MiniLM (default, fast)",
   "Xenova/paraphrase-multilingual-mpnet-base-v2":
-    "mpnet-base multilingual — strongest matches, larger & slower",
+    "mpnet (stronger, slower)",
   "Xenova/multilingual-e5-small":
-    "e5-small: retrieval/search model, weaker for note similarity",
+    "e5-small (search-tuned)",
   "jinaai/jina-embeddings-v5-text-nano-text-matching":
-    "jina-v5-nano: best quality (whole-note), ~250MB download, non-commercial",
+    "jina-v5-nano (best, ~250 MB)",
 };
 
 // One-click presets. "Balanced" is light and fast; "Best quality" uses a larger
@@ -369,10 +370,8 @@ export default class RelatedNotesPlugin extends Plugin {
 
     // Reader (4.0): a local reader model working only in idle gaps. Activity
     // timestamps gate its scheduler; everything else lives in ReaderService.
-    // eslint-disable-next-line obsidianmd/prefer-active-doc -- one-time heartbeat listener; main window is the right approximation
-    this.registerDomEvent(document, "keydown", () => (this.lastActivityAt = Date.now()));
-    // eslint-disable-next-line obsidianmd/prefer-active-doc -- same heartbeat
-    this.registerDomEvent(document, "pointerdown", () => (this.lastActivityAt = Date.now()));
+    this.registerDomEvent(activeDocument, "keydown", () => (this.lastActivityAt = Date.now()));
+    this.registerDomEvent(activeDocument, "pointerdown", () => (this.lastActivityAt = Date.now()));
     this.reader = new ReaderService(this.readerHost(), {
       rung: this.settings.readerRung,
       pace: this.settings.readerPace,
@@ -742,10 +741,9 @@ export default class RelatedNotesPlugin extends Plugin {
       },
       saveArtifacts: (json) =>
         this.app.vault.adapter.write(normalizePath(`${this.pluginDir()}/reader-artifacts.json`), json),
-      readEngineBundle: async () => {
-        const p = normalizePath(`${this.pluginDir()}/reader-bundle.mjs`);
-        return new Uint8Array(await this.app.vault.adapter.readBinary(p));
-      },
+      // The engine bundle ships inlined in main.js (see esbuild.config.mjs),
+      // so a manual or store install can never be missing it.
+      readEngineBundle: () => Promise.resolve(new TextEncoder().encode(readerEngineSource)),
     };
   }
 
@@ -1542,8 +1540,8 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     });
     intro.createEl("strong", { text: "Smart Related Notes" });
     intro.appendText(
-      " ranks your vault by meaning, using a model that runs entirely on this machine — " +
-        "offline, nothing leaves your vault. Pick a model to start indexing.",
+      " ranks your vault by meaning, with a model that runs entirely on this machine. " +
+        "Offline; nothing leaves your vault. Pick a model in Setup to start indexing.",
     );
     if (!this.plugin.settings.modelChosen) {
       containerEl.createEl("div", {
@@ -1576,7 +1574,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     new Setting(host)
       .setName("Model")
       .setDesc(
-        "MiniLM is the fast default. jina-v5-nano is the strongest here — a ~250 MB, non-commercial download. Changing this re-embeds the vault.",
+        "MiniLM is the fast default. jina-v5-nano is the strongest here (a ~250 MB, non-commercial download). Changing this re-embeds the vault.",
       )
       .addDropdown((d) => {
         for (const [id, label] of Object.entries(MODEL_OPTIONS)) d.addOption(id, label);
@@ -1916,7 +1914,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     this.toggle(
       host,
       "Chunk-level matching",
-      "Embed each note as several chunks instead of one vector — far better on long notes. Rebuilds the index.",
+      "Embed each note as several chunks instead of one vector, far better on long notes. Rebuilds the index.",
       this.plugin.settings.chunking,
       (v) => (this.plugin.settings.chunking = v),
     );
@@ -1950,14 +1948,43 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
   // --- Reader (4.0) ----------------------------------------------------------
   private readerStatusEl: HTMLElement | null = null;
 
+  // The reader's one visible state row: what it is doing right now, with a
+  // real progress bar while a download runs and a live counter while it reads.
   updateReaderStatus(): void {
     const r = this.plugin.reader;
     if (!this.readerStatusEl || !r) return;
     const s = r.status;
-    if (s.state === "off") this.readerStatusEl.setText("Off.");
-    else if (s.state === "downloading") this.readerStatusEl.setText(`Downloading: ${s.detail}`);
-    else if (s.state === "error") this.readerStatusEl.setText(`Engine error: ${s.detail}`);
-    else this.readerStatusEl.setText(`Reading in the background: ${s.read} of ${s.total} notes done.`);
+    const host = this.readerStatusEl;
+    host.empty();
+    const line = host.createDiv({ cls: "rn-reader-state" });
+    if (s.state === "off") {
+      line.setText("Off. Nothing runs and nothing is downloaded until you enable it.");
+      return;
+    }
+    if (s.state === "error") {
+      line.setText(`Engine error: ${s.detail}`);
+      line.addClass("rn-reader-state-error");
+      return;
+    }
+    if (s.state === "downloading") {
+      const pctText = s.pct !== null ? ` ${Math.round(s.pct * 100)}%` : "";
+      line.setText(`${s.detail}${pctText}`);
+      const bar = host.createDiv({ cls: "rn-reader-bar" });
+      const fill = bar.createDiv({ cls: "rn-reader-bar-fill" });
+      if (s.pct !== null) fill.setCssProps({ "--rn-reader-pct": `${Math.round(s.pct * 100)}%` });
+      else fill.addClass("rn-reader-bar-busy");
+      return;
+    }
+    // ready
+    if (s.total > 0 && s.read >= s.total) {
+      line.setText(`All ${s.total} notes read. Watching for changes.`);
+    } else {
+      line.setText(`Reading in the background: ${s.read} of ${s.total} notes read.`);
+      const bar = host.createDiv({ cls: "rn-reader-bar" });
+      const fill = bar.createDiv({ cls: "rn-reader-bar-fill rn-reader-bar-soft" });
+      const pct = s.total > 0 ? Math.round((s.read / s.total) * 100) : 0;
+      fill.setCssProps({ "--rn-reader-pct": `${pct}%` });
+    }
   }
 
   private readerSection(host: HTMLElement): void {
@@ -1980,8 +2007,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         t.setValue(this.plugin.settings.readerEnabled).onChange((v) => {
           this.plugin.settings.readerEnabled = v;
           save();
-          // eslint-disable-next-line @typescript-eslint/no-deprecated -- the tab's only render hook is its own display()
-          this.display();
+          this.render();
         }),
       );
 
@@ -2070,7 +2096,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       ].filter(Boolean);
       new Setting(host)
         .setName("On this device")
-        .setDesc(`${parts.join(" · ")} — stored outside the vault, never synced.`)
+        .setDesc(`${parts.join(" · ")}. Stored outside the vault, never synced.`)
         .addButton((b) =>
           b.setButtonText("Remove downloads").onClick(() => {
             this.plugin.settings.readerEnabled = false;
@@ -2078,8 +2104,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
             this.plugin.applyReaderSettings();
             void this.plugin.reader?.disable().then(() => {
               removeAssets();
-              // eslint-disable-next-line @typescript-eslint/no-deprecated -- see above
-              this.display();
+              this.render();
             });
           }),
         );
@@ -2123,8 +2148,8 @@ class ReaderOfflineModal extends Modal {
       li.appendText(it.present ? "✓ " : "· ");
       li.createEl("a", { text: it.label, href: it.url });
       li.appendText(` (${it.sizeLabel})`);
-      if (it.present) li.appendText(" — installed");
-      else if (it.optional) li.appendText(" — optional");
+      if (it.present) li.appendText(" (installed)");
+      else if (it.optional) li.appendText(" (optional)");
     }
   }
 

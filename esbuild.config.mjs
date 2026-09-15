@@ -94,24 +94,60 @@ const inlineWorkerPlugin = {
 };
 
 // The reader engine bundle: node-llama-cpp + our entry, as ONE self-contained
-// ESM file shipped in the release next to main.js. It is ESM (node-llama-cpp
-// uses top-level await, so CJS is impossible) and loaded at runtime via a real
-// dynamic import(); llama/ data and bins/ binaries are fetched separately at
-// first enable and land beside it (see src/reader/reader-assets.ts).
-await esbuild.build({
-  entryPoints: ["src/reader/engine-entry.mjs"],
-  bundle: true,
-  platform: "node",
-  format: "esm",
-  target: "es2022",
-  outfile: "reader-bundle.mjs",
-  external: ["@node-llama-cpp/*", "@reflink/*"],
-  banner: {
-    js: "import { createRequire as __nlcRequire } from 'node:module'; const require = __nlcRequire(import.meta.url);",
+// ESM file. It is ESM (node-llama-cpp uses top-level await, so CJS is
+// impossible) and loaded at runtime via a real dynamic import(). It is INLINED
+// into main.js as a string (the same pattern as the embed worker) and written
+// to the reader's asset folder at first enable, so the release stays the
+// classic three files and a manual install cannot miss it; llama/ data and
+// bins/ binaries are fetched separately (see src/reader/reader-assets.ts).
+async function bundleReaderEngine() {
+  const result = await esbuild.build({
+    entryPoints: ["src/reader/engine-entry.mjs"],
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "es2022",
+    external: ["@node-llama-cpp/*", "@reflink/*"],
+    banner: {
+      js: "import { createRequire as __nlcRequire } from 'node:module'; const require = __nlcRequire(import.meta.url);",
+    },
+    write: false,
+    minify: prod,
+    metafile: true,
+    logLevel: "silent",
+  });
+  return {
+    source: result.outputFiles[0].text,
+    watchFiles: Object.keys(result.metafile.inputs),
+  };
+}
+
+let lastReaderWatchFiles = null;
+const inlineReaderPlugin = {
+  name: "inline-reader-engine",
+  setup(build) {
+    build.onResolve({ filter: /^virtual:reader-engine$/ }, (args) => ({
+      path: args.path,
+      namespace: "reader-engine",
+    }));
+    build.onLoad({ filter: /.*/, namespace: "reader-engine" }, async () => {
+      try {
+        const { source, watchFiles } = await bundleReaderEngine();
+        lastReaderWatchFiles = watchFiles;
+        return {
+          contents: `export default ${JSON.stringify(source)};`,
+          loader: "js",
+          watchFiles,
+        };
+      } catch (e) {
+        return {
+          errors: e.errors ?? [{ text: String(e) }],
+          watchFiles: lastReaderWatchFiles ?? ["src/reader/engine-entry.mjs"],
+        };
+      }
+    });
   },
-  minify: prod,
-  logLevel: "info",
-});
+};
 
 const ctx = await esbuild.context({
   entryPoints: ["src/main.ts"],
@@ -127,12 +163,16 @@ const ctx = await esbuild.context({
   ],
   format: "cjs",
   target: "es2022",
+  // Keep dynamic import() untransformed in the CJS output: the reader engine
+  // bundle is ESM with top-level await and must load through a real import()
+  // (Electron's renderer supports it), never a require().
+  supported: { "dynamic-import": true },
   outfile: "main.js",
   sourcemap: prod ? false : "inline",
   treeShaking: true,
   minify: prod,
   logLevel: "info",
-  plugins: [inlineWorkerPlugin],
+  plugins: [inlineWorkerPlugin, inlineReaderPlugin],
 });
 
 // `node esbuild.config.mjs` (dev) watches with inline sourcemaps;

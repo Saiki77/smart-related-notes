@@ -610,3 +610,56 @@
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
 }
+
+/* Reader status row: state line + progress bar (download or reading pass). */
+.rn-reader-state {
+  margin: var(--size-2-2) 0 var(--size-2-1);
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+.rn-reader-state-error {
+  color: var(--text-error);
+}
+.rn-reader-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--background-modifier-border);
+  overflow: hidden;
+  margin-bottom: var(--size-2-2);
+}
+.rn-reader-bar-fill {
+  height: 100%;
+  width: var(--rn-reader-pct, 0%);
+  border-radius: 2px;
+  background: var(--interactive-accent);
+  transition: width 300ms ease;
+}
+.rn-reader-bar-soft {
+  opacity: 0.55;
+}
+.rn-reader-bar-busy {
+  width: 30%;
+  animation: rn-reader-busy 1.2s ease-in-out infinite alternate;
+}
+@keyframes rn-reader-busy {
+  from { margin-left: 0; }
+  to { margin-left: 70%; }
+}
+
+/* Settings polish: roomier section headers that read as native rows. */
+.rn-sec-summary {
+  padding: 0.85em 0.2em;
+  border-radius: var(--radius-s);
+}
+.rn-sec-summary:hover {
+  background: var(--background-modifier-hover);
+}
+.rn-sec-title {
+  font-size: var(--font-ui-medium);
+}
+.rn-sec > *:not(.rn-sec-summary) {
+  margin-left: 0.35em;
+}
+.rn-sec[open] {
+  padding-bottom: var(--size-4-2);
+}

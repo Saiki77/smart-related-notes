@@ -75,7 +75,6 @@ jobs:
             main.js
             manifest.json
             styles.css
-            reader-bundle.mjs
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -90,4 +89,3 @@ jobs:
             main.js
             manifest.json
             styles.css
-            reader-bundle.mjs

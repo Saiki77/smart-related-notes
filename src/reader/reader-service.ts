@@ -46,6 +46,9 @@ export interface ReaderStatus {
   detail: string;
   read: number;
   total: number;
+  // Download progress 0..1 when a measurable download is running, else null
+  // (staging and small fetches report no fraction).
+  pct: number | null;
 }
 
 export class ReaderService {
@@ -56,7 +59,7 @@ export class ReaderService {
   private saveQueued = false;
   private tagDf: Map<string, number> | null = null;
   private tagDfAt = 0;
-  status: ReaderStatus = { state: "off", detail: "", read: 0, total: 0 };
+  status: ReaderStatus = { state: "off", detail: "", read: 0, total: 0, pct: null };
   onStatus: (() => void) | null = null;
 
   constructor(
@@ -97,14 +100,13 @@ export class ReaderService {
     const rung = this.rung();
     try {
       if (!assetsReady(rung)) {
-        this.setStatus({ state: "downloading", detail: "Preparing download" });
+        this.setStatus({ state: "downloading", detail: "Preparing download", pct: null });
         await ensureAssets(() => this.host.readEngineBundle(), rung, (label, done, total) => {
-          const pct = total > 1 ? ` ${Math.round((done / total) * 100)}%` : "";
-          this.setStatus({ state: "downloading", detail: `${label}${pct}` });
+          this.setStatus({ state: "downloading", detail: label, pct: total > 1 ? done / total : null });
         });
       }
       this.engine = new ReaderEngine(rung, this.opts.idleUnloadMinutes);
-      this.setStatus({ state: "ready", detail: "" });
+      this.setStatus({ state: "ready", detail: "", pct: null });
       this.refreshCounts();
       this.startTicking();
     } catch (e) {
@@ -113,9 +115,10 @@ export class ReaderService {
       // Name the way out instead of leaving a bare network error.
       const blocked = /fetch failed|failed to fetch|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|certificat|CERT_|self.signed|local issuer|ERR_TLS|ERR_NETWORK|ERR_CERT|403|407|HTTP 5/i.test(msg);
       this.setStatus({
+        pct: null,
         state: "error",
         detail: blocked
-          ? `${msg} — this network seems to block downloads. Use "Offline setup" below: download the files in your browser, then import them.`
+          ? `${msg}. This network seems to block downloads; use offline setup to fetch the files through your browser.`
           : msg,
       });
     }
@@ -126,7 +129,7 @@ export class ReaderService {
     this.timer = null;
     await this.engine?.unload();
     this.engine = null;
-    this.setStatus({ state: "off", detail: "" });
+    this.setStatus({ state: "off", detail: "", pct: null });
   }
 
   engineError(): string | null {

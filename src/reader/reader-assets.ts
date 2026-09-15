@@ -1,3 +1,11 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import crypto from "node:crypto";
+import zlib from "node:zlib";
+import { Readable } from "node:stream";
+import { requestUrl } from "obsidian";
+
 // Reader asset management: everything the native engine needs on disk, none of
 // it inside the vault (a 5 GB GGUF must never enter iCloud sync). Layout under
 // ~/.cache/smart-related-notes/reader/:
@@ -26,7 +34,6 @@ export const RUNGS: RungSpec[] = [
 ];
 
 export function autoRung(): RungSpec {
-  const os = require("node:os") as typeof import("os");
   const ramGb = os.totalmem() / 1024 ** 3;
   return RUNGS.find((r) => ramGb >= r.minRamGb) ?? RUNGS[RUNGS.length - 1];
 }
@@ -70,37 +77,21 @@ function platformPackages(): string[] {
 }
 
 export function assetsRoot(): string {
-  const os = require("node:os") as typeof import("os");
-  const path = require("node:path") as typeof import("path");
   // Test hook: the bench first-enable simulation redirects the asset root.
   const override = process.env.SRN_READER_HOME;
   return override ?? path.join(os.homedir(), ".cache", "smart-related-notes", "reader");
 }
 
 export function modelPath(rung: RungSpec): string {
-  const path = require("node:path") as typeof import("path");
   return path.join(assetsRoot(), "models", rung.file);
 }
 
 export function bundlePath(): string {
-  const path = require("node:path") as typeof import("path");
   return path.join(assetsRoot(), "dist", "reader-bundle.mjs");
 }
 
 export type AssetProgress = (label: string, done: number, total: number) => void;
 
-interface FsMod {
-  existsSync(p: string): boolean;
-  mkdirSync(p: string, o?: { recursive: boolean }): void;
-  writeFileSync(p: string, d: Uint8Array | string): void;
-  readFileSync(p: string): Buffer;
-  statSync(p: string): { size: number };
-  renameSync(a: string, b: string): void;
-  rmSync(p: string, o?: { recursive: boolean; force: boolean }): void;
-  createWriteStream(p: string, o?: { flags: string }): NodeJS.WritableStream & { close(cb: () => void): void };
-}
-const fs = (): FsMod => require("node:fs") as FsMod;
-const pathMod = (): typeof import("path") => require("node:path") as typeof import("path");
 
 // ---------------------------------------------------------------- tar ------
 
@@ -137,11 +128,13 @@ async function extractNpmPackage(
   destRoot: string,
   progress: AssetProgress,
 ): Promise<void> {
-  const crypto = require("node:crypto") as typeof import("crypto");
-  const meta = await (await fetch(`https://registry.npmjs.org/${name}/${ENGINE_VERSION}`)).json() as {
+  const meta = (await requestUrl({ url: `https://registry.npmjs.org/${name}/${ENGINE_VERSION}` })).json as {
     dist: { tarball: string; integrity: string };
   };
   progress(`Downloading ${name}`, 0, 1);
+  // fetch, not requestUrl: this and the model download below stream through
+  // Chromium's network stack (system proxy, enterprise certificates) and the
+  // model one cannot be buffered whole in memory the way requestUrl does.
   const raw = new Uint8Array(await (await fetch(meta.dist.tarball)).arrayBuffer());
   const want = meta.dist.integrity;
   const got = `sha512-${crypto.createHash("sha512").update(raw).digest("base64")}`;
@@ -151,18 +144,15 @@ async function extractNpmPackage(
 }
 
 function extractTarball(gz: Uint8Array, keep: RegExp, destRoot: string): void {
-  const zlib = require("node:zlib") as typeof import("zlib");
   const tar = zlib.gunzipSync(gz);
-  const f = fs();
-  const path = pathMod();
   for (const e of tarEntries(tar)) {
     const rel = e.name.replace(/^package\//, "");
     if (!keep.test(rel) || e.type === "5") continue;
     if (e.type !== "0" && e.type !== "\0") continue;
     if (rel.includes("..")) continue;
     const dest = path.join(destRoot, rel);
-    f.mkdirSync(path.dirname(dest), { recursive: true });
-    f.writeFileSync(dest, e.data);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, e.data);
   }
 }
 
@@ -171,25 +161,22 @@ function extractTarball(gz: Uint8Array, keep: RegExp, destRoot: string): void {
 // Resumable streaming download with an incremental sha256 that survives ONLY
 // full non-resumed runs; on resume the hash is recomputed from disk first.
 async function downloadGguf(rung: RungSpec, progress: AssetProgress): Promise<void> {
-  const f = fs();
-  const path = pathMod();
-  const crypto = require("node:crypto") as typeof import("crypto");
   const dest = modelPath(rung);
   const part = `${dest}.part`;
-  f.mkdirSync(path.dirname(dest), { recursive: true });
-  if (f.existsSync(dest)) return;
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  if (fs.existsSync(dest)) return;
 
   const base = `https://huggingface.co/${rung.repo}`;
   // The LFS pointer file carries the upstream sha256.
-  const pointer = await (await fetch(`${base}/raw/main/${rung.file}`)).text();
+  const pointer = (await requestUrl({ url: `${base}/raw/main/${rung.file}` })).text;
   const wantSha = /sha256:([0-9a-f]{64})/.exec(pointer)?.[1] ?? null;
 
   const hash = crypto.createHash("sha256");
   let have = 0;
-  if (f.existsSync(part)) {
-    have = f.statSync(part).size;
+  if (fs.existsSync(part)) {
+    have = fs.statSync(part).size;
     // Feed the existing bytes through the hash so verification stays valid.
-    hash.update(f.readFileSync(part));
+    hash.update(fs.readFileSync(part));
   }
   const total = rung.sizeMb * 1024 * 1024;
   const res = await fetch(`${base}/resolve/main/${rung.file}`, {
@@ -197,12 +184,12 @@ async function downloadGguf(rung: RungSpec, progress: AssetProgress): Promise<vo
   });
   if (!res.ok && res.status !== 206) throw new Error(`model download failed: HTTP ${res.status}`);
   if (res.status === 200 && have > 0) {
-    f.rmSync(part, { recursive: false, force: true });
+    fs.rmSync(part, { recursive: false, force: true });
     have = 0;
     hash.destroy?.();
     return downloadGguf(rung, progress);
   }
-  const out = f.createWriteStream(part, { flags: have > 0 ? "a" : "w" });
+  const out = fs.createWriteStream(part, { flags: have > 0 ? "a" : "w" });
   const reader = (res.body as ReadableStream<Uint8Array>).getReader();
   let sinceReport = 0;
   for (;;) {
@@ -211,33 +198,31 @@ async function downloadGguf(rung: RungSpec, progress: AssetProgress): Promise<vo
     hash.update(value);
     have += value.byteLength;
     sinceReport += value.byteLength;
-    if (!out.write(value)) await new Promise((r) => out.once("drain", r));
+    if (!out.write(value)) await new Promise<void>((r) => out.once("drain", () => r()));
     if (sinceReport > 16 * 1024 * 1024) {
       sinceReport = 0;
       progress(`Downloading ${rung.label}`, have, Math.max(total, have));
     }
   }
-  await new Promise<void>((r) => out.end(r));
+  await new Promise<void>((r) => out.end(() => r()));
   const gotSha = hash.digest("hex");
   if (wantSha && gotSha !== wantSha) {
-    f.rmSync(part, { recursive: false, force: true });
+    fs.rmSync(part, { recursive: false, force: true });
     throw new Error("model download corrupted (checksum mismatch); try again");
   }
-  f.renameSync(part, dest);
+  fs.renameSync(part, dest);
   progress(`Downloading ${rung.label}`, 1, 1);
 }
 
 // ---------------------------------------------------------------- public ---
 
 export function assetsReady(rung: RungSpec): boolean {
-  const f = fs();
-  const path = pathMod();
   const root = assetsRoot();
   return (
-    f.existsSync(bundlePath()) &&
-    f.existsSync(path.join(root, "llama", "binariesGithubRelease.json")) &&
-    f.existsSync(path.join(root, "bins")) &&
-    f.existsSync(modelPath(rung))
+    fs.existsSync(bundlePath()) &&
+    fs.existsSync(path.join(root, "llama", "binariesGithubRelease.json")) &&
+    fs.existsSync(path.join(root, "bins")) &&
+    fs.existsSync(modelPath(rung))
   );
 }
 
@@ -247,30 +232,28 @@ export async function ensureAssets(
   rung: RungSpec,
   progress: AssetProgress,
 ): Promise<void> {
-  const f = fs();
-  const path = pathMod();
   const root = assetsRoot();
-  f.mkdirSync(path.join(root, "dist"), { recursive: true });
+  fs.mkdirSync(path.join(root, "dist"), { recursive: true });
 
   const stamp = path.join(root, "engine.version");
-  const current = f.existsSync(stamp) ? f.readFileSync(stamp).toString() : "";
+  const current = fs.existsSync(stamp) ? fs.readFileSync(stamp).toString() : "";
   if (current !== ENGINE_VERSION && current !== "") {
     // Engine parts from another version cannot be trusted with this bundle.
-    f.rmSync(path.join(root, "llama"), { recursive: true, force: true });
-    f.rmSync(path.join(root, "bins"), { recursive: true, force: true });
-    f.rmSync(stamp, { recursive: false, force: true });
+    fs.rmSync(path.join(root, "llama"), { recursive: true, force: true });
+    fs.rmSync(path.join(root, "bins"), { recursive: true, force: true });
+    fs.rmSync(stamp, { recursive: false, force: true });
   }
-  if (current !== ENGINE_VERSION || !f.existsSync(bundlePath())) {
+  if (current !== ENGINE_VERSION || !fs.existsSync(bundlePath())) {
     // Local copy out of the plugin folder; involves no network.
     progress("Staging engine", 0, 1);
-    f.writeFileSync(bundlePath(), await pluginBundleSource());
+    fs.writeFileSync(bundlePath(), await pluginBundleSource());
   }
   // Engine data + binaries: skipped entirely when an offline import (or an
   // earlier run) already put them there.
-  if (!f.existsSync(path.join(root, "llama", "binariesGithubRelease.json"))) {
+  if (!fs.existsSync(path.join(root, "llama", "binariesGithubRelease.json"))) {
     await extractNpmPackage("node-llama-cpp", MAIN_KEEP, root, progress);
   }
-  if (!f.existsSync(path.join(root, "bins"))) {
+  if (!fs.existsSync(path.join(root, "bins"))) {
     for (const target of platformPackages()) {
       try {
         await extractNpmPackage(`@node-llama-cpp/${target}`, /^bins\//, root, progress);
@@ -280,14 +263,14 @@ export async function ensureAssets(
         console.warn(`[related-notes] reader target ${target}:`, e);
       }
     }
-    if (!f.existsSync(path.join(root, "bins"))) throw new Error("no engine binaries available for this platform");
+    if (!fs.existsSync(path.join(root, "bins"))) throw new Error("no engine binaries available for this platform");
   }
-  f.writeFileSync(stamp, ENGINE_VERSION);
+  fs.writeFileSync(stamp, ENGINE_VERSION);
   await downloadGguf(rung, progress);
 }
 
 export function removeAssets(): void {
-  fs().rmSync(assetsRoot(), { recursive: true, force: true });
+  fs.rmSync(assetsRoot(), { recursive: true, force: true });
 }
 
 // ------------------------------------------------------------ offline ------
@@ -306,15 +289,13 @@ export interface OfflineItem {
 }
 
 export function offlineItems(rung: RungSpec): OfflineItem[] {
-  const f = fs();
-  const path = pathMod();
   const root = assetsRoot();
   const items: OfflineItem[] = [
     {
       label: "Engine core (node-llama-cpp)",
       url: npmTarballUrl("node-llama-cpp"),
       sizeLabel: "≈35 MB",
-      present: f.existsSync(path.join(root, "llama", "binariesGithubRelease.json")),
+      present: fs.existsSync(path.join(root, "llama", "binariesGithubRelease.json")),
       optional: false,
     },
   ];
@@ -324,7 +305,7 @@ export function offlineItems(rung: RungSpec): OfflineItem[] {
       label: `Engine binaries (${t})`,
       url: npmTarballUrl(`@node-llama-cpp/${t}`),
       sizeLabel: "≈5-45 MB",
-      present: f.existsSync(path.join(root, "bins", t)),
+      present: fs.existsSync(path.join(root, "bins", t)),
       // On Windows/Linux the vulkan build is the fast path and the plain one
       // the fallback; either alone is enough to run.
       optional: targets.length > 1 && t === targets[targets.length - 1],
@@ -335,7 +316,7 @@ export function offlineItems(rung: RungSpec): OfflineItem[] {
     label: rung.label,
     url: `https://huggingface.co/${rung.repo}/resolve/main/${rung.file}?download=true`,
     sizeLabel: `${(pin.bytes / 1e9).toFixed(1)} GB`,
-    present: f.existsSync(modelPath(rung)),
+    present: fs.existsSync(modelPath(rung)),
     optional: false,
   });
   return items;
@@ -371,16 +352,13 @@ async function slurp(c: ImportCandidate): Promise<Uint8Array> {
 }
 
 async function importGguf(c: ImportCandidate, spec: RungSpec, progress: AssetProgress): Promise<ImportOutcome> {
-  const f = fs();
-  const path = pathMod();
-  const crypto = require("node:crypto") as typeof import("crypto");
   const pin = GGUF_PIN[spec.file];
   const dest = modelPath(spec);
-  if (f.existsSync(dest)) return { file: c.name, ok: true, note: `${spec.label} is already installed` };
-  f.mkdirSync(path.dirname(dest), { recursive: true });
+  if (fs.existsSync(dest)) return { file: c.name, ok: true, note: `${spec.label} is already installed` };
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
   const part = `${dest}.import`;
   const hash = crypto.createHash("sha256");
-  const out = f.createWriteStream(part, { flags: "w" });
+  const out = fs.createWriteStream(part, { flags: "w" });
   const reader = c.stream().getReader();
   let have = 0;
   let first = true;
@@ -396,33 +374,29 @@ async function importGguf(c: ImportCandidate, spec: RungSpec, progress: AssetPro
       }
       hash.update(value);
       have += value.byteLength;
-      if (!out.write(value)) await new Promise((r) => out.once("drain", r));
+      if (!out.write(value)) await new Promise<void>((r) => out.once("drain", () => r()));
       progress(`Importing ${spec.label}`, have, pin.bytes);
     }
-    await new Promise<void>((r) => out.end(r));
+    await new Promise<void>((r) => out.end(() => r()));
     if (hash.digest("hex") !== pin.sha256) {
-      throw new Error("checksum mismatch — the download is incomplete or altered; re-download it");
+      throw new Error("checksum mismatch; the download is incomplete or altered, download it again");
     }
-    f.renameSync(part, dest);
+    fs.renameSync(part, dest);
     return { file: c.name, ok: true, note: `${spec.label} installed and verified` };
   } catch (e) {
-    await new Promise<void>((r) => out.end(r));
-    f.rmSync(part, { recursive: false, force: true });
+    await new Promise<void>((r) => out.end(() => r()));
+    fs.rmSync(part, { recursive: false, force: true });
     return { file: c.name, ok: false, note: e instanceof Error ? e.message : String(e) };
   }
 }
 
 function importEngineTarball(c: ImportCandidate, raw: Uint8Array): ImportOutcome {
-  const f = fs();
-  const path = pathMod();
-  const crypto = require("node:crypto") as typeof import("crypto");
   const root = assetsRoot();
   const got = `sha512-${crypto.createHash("sha512").update(raw).digest("base64")}`;
   const name = Object.keys(NPM_INTEGRITY).find((n) => NPM_INTEGRITY[n] === got);
   if (!name) {
     // Identify what it actually is, so the message can name the fix.
     try {
-      const zlib = require("node:zlib") as typeof import("zlib");
       for (const e of tarEntries(zlib.gunzipSync(raw))) {
         if (e.name.replace(/^package\//, "") === "package.json") {
           const pkg = JSON.parse(new TextDecoder().decode(e.data)) as { name?: string; version?: string };
@@ -439,7 +413,7 @@ function importEngineTarball(c: ImportCandidate, raw: Uint8Array): ImportOutcome
     return { file: c.name, ok: false, note: "not one of the reader's engine files" };
   }
   if (name === "node-llama-cpp") {
-    f.rmSync(path.join(root, "llama"), { recursive: true, force: true });
+    fs.rmSync(path.join(root, "llama"), { recursive: true, force: true });
     extractTarball(raw, MAIN_KEEP, root);
     return { file: c.name, ok: true, note: "engine core installed and verified" };
   }
@@ -450,8 +424,6 @@ function importEngineTarball(c: ImportCandidate, raw: Uint8Array): ImportOutcome
 // The browser's default download location, where the guided setup watches
 // for the files it asked the browser to fetch.
 export function downloadsDir(): string {
-  const os = require("node:os") as typeof import("os");
-  const path = require("node:path") as typeof import("path");
   return path.join(os.homedir(), "Downloads");
 }
 
@@ -465,18 +437,14 @@ export async function importFromFolder(
   skip: (key: string) => boolean,
   progress: AssetProgress,
 ): Promise<{ key: string; outcome: ImportOutcome }[]> {
-  const f = fs();
-  const path = pathMod();
-  const fsx = require("node:fs") as typeof import("fs");
-  const streamMod = require("node:stream") as typeof import("stream");
-  if (!f.existsSync(dir)) return [];
+  if (!fs.existsSync(dir)) return [];
   const results: { key: string; outcome: ImportOutcome }[] = [];
-  for (const name of fsx.readdirSync(dir)) {
+  for (const name of fs.readdirSync(dir)) {
     if (/\.(crdownload|part|download|tmp)$/i.test(name)) continue;
     const p = path.join(dir, name);
     let st: { size: number; mtimeMs: number };
     try {
-      const s = fsx.statSync(p);
+      const s = fs.statSync(p);
       if (!s.isFile()) continue;
       st = { size: s.size, mtimeMs: s.mtimeMs };
     } catch {
@@ -489,7 +457,7 @@ export async function importFromFolder(
     if (skip(key)) continue;
     const outcome = (
       await importAssetFiles(
-        [{ name, size: st.size, stream: () => streamMod.Readable.toWeb(fsx.createReadStream(p)) as ReadableStream<Uint8Array> }],
+        [{ name, size: st.size, stream: () => Readable.toWeb(fs.createReadStream(p)) as ReadableStream<Uint8Array> }],
         progress,
       )
     )[0];
@@ -499,8 +467,6 @@ export async function importFromFolder(
 }
 
 export async function importAssetFiles(files: ImportCandidate[], progress: AssetProgress): Promise<ImportOutcome[]> {
-  const f = fs();
-  const path = pathMod();
   const root = assetsRoot();
   const outcomes: ImportOutcome[] = [];
   for (const c of files) {
@@ -525,35 +491,31 @@ export async function importAssetFiles(files: ImportCandidate[], progress: Asset
   }
   // The stamp marks a complete engine; write it only when both halves exist.
   if (
-    f.existsSync(path.join(root, "llama", "binariesGithubRelease.json")) &&
-    f.existsSync(path.join(root, "bins"))
+    fs.existsSync(path.join(root, "llama", "binariesGithubRelease.json")) &&
+    fs.existsSync(path.join(root, "bins"))
   ) {
-    f.writeFileSync(path.join(root, "engine.version"), ENGINE_VERSION);
+    fs.writeFileSync(path.join(root, "engine.version"), ENGINE_VERSION);
   }
   return outcomes;
 }
 
 export function assetSizesMb(): { engine: number; models: { file: string; mb: number }[] } {
-  const f = fs();
-  const path = pathMod();
   const root = assetsRoot();
   let engine = 0;
   const walk = (d: string): number => {
-    const fsx = require("node:fs") as typeof import("fs");
     let s = 0;
-    if (!f.existsSync(d)) return 0;
-    for (const e of fsx.readdirSync(d, { withFileTypes: true })) {
+    if (!fs.existsSync(d)) return 0;
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       const p = path.join(d, e.name);
-      s += e.isDirectory() ? walk(p) : f.statSync(p).size;
+      s += e.isDirectory() ? walk(p) : fs.statSync(p).size;
     }
     return s;
   };
   engine = (walk(path.join(root, "llama")) + walk(path.join(root, "bins")) + walk(path.join(root, "dist"))) / 1e6;
   const models: { file: string; mb: number }[] = [];
   const mdir = path.join(root, "models");
-  if (f.existsSync(mdir)) {
-    const fsx = require("node:fs") as typeof import("fs");
-    for (const m of fsx.readdirSync(mdir)) models.push({ file: m, mb: f.statSync(path.join(mdir, m)).size / 1e6 });
+  if (fs.existsSync(mdir)) {
+    for (const m of fs.readdirSync(mdir)) models.push({ file: m, mb: fs.statSync(path.join(mdir, m)).size / 1e6 });
   }
   return { engine, models };
 }

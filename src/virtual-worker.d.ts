@@ -6,3 +6,10 @@ declare module "virtual:embed-worker" {
   const workerSource: string;
   export default workerSource;
 }
+
+// Same pattern for the reader engine bundle (node-llama-cpp + entry, ESM with
+// top-level await): inlined as a string and written to disk at first enable.
+declare module "virtual:reader-engine" {
+  const engineSource: string;
+  export default engineSource;
+}
