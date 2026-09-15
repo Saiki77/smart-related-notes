@@ -2,6 +2,9 @@ import {
   ItemView,
   WorkspaceLeaf,
   TFile,
+  Keymap,
+  Menu,
+  Notice,
   setIcon,
   debounce,
   type Debouncer,
@@ -42,6 +45,13 @@ export class RelatedNotesView extends ItemView {
   // show the notes the active note LINKS TO — i.e. a MOC's members — as cards.
   private linksMode = false;
   private linksToggleEl!: HTMLElement;
+
+  // Pinned ranking source (toggled by the header pin icon): freeze the panel to
+  // one note so opening results does not re-anchor it. Holds the TFile instance,
+  // which Obsidian mutates in place on rename — so a pin survives renames, and
+  // is dropped when the file is deleted (validated on every render).
+  private pinnedFile: TFile | null = null;
+  private pinToggleEl!: HTMLElement;
 
   // True while a search is re-initialising a cold (idle-unloaded) engine; owns
   // the status line so concurrent progress events can't clobber the hint.
@@ -87,6 +97,12 @@ export class RelatedNotesView extends ItemView {
     });
     setIcon(this.linksToggleEl, "link");
     this.linksToggleEl.addEventListener("click", () => this.toggleLinks());
+    this.pinToggleEl = actions.createDiv({
+      cls: "rn-pin-toggle clickable-icon",
+      attr: { "aria-label": "Pin the panel to the current note" },
+    });
+    setIcon(this.pinToggleEl, "pin");
+    this.pinToggleEl.addEventListener("click", () => this.togglePin());
     const refresh = actions.createDiv({
       cls: "rn-refresh clickable-icon",
       attr: { "aria-label": "Rebuild the index" },
@@ -178,11 +194,79 @@ export class RelatedNotesView extends ItemView {
     if (p.status === "ready") this.scheduleRender();
   }
 
+  // The note the panel ranks against: the pinned note when a valid pin is set,
+  // the active note otherwise. A stale pin (file deleted, or replaced by a new
+  // file at the same path) clears itself.
+  private anchorFile(): TFile | null {
+    if (this.pinnedFile) {
+      const current = this.app.vault.getAbstractFileByPath(this.pinnedFile.path);
+      if (current === this.pinnedFile) return this.pinnedFile;
+      this.setPin(null);
+    }
+    return this.app.workspace.getActiveFile();
+  }
+
+  private setPin(file: TFile | null): void {
+    this.pinnedFile = file;
+    this.pinToggleEl.toggleClass("is-active", file !== null);
+    this.pinToggleEl.setAttr(
+      "aria-label",
+      file ? `Pinned to ${file.basename} (click to unpin)` : "Pin the panel to the current note",
+    );
+  }
+
+  private togglePin(): void {
+    if (this.pinnedFile) {
+      this.setPin(null);
+    } else {
+      const active = this.app.workspace.getActiveFile();
+      if (!active || active.extension !== "md") {
+        new Notice("Open a note to pin the panel to it.");
+        return;
+      }
+      this.setPin(active);
+    }
+    this.render();
+  }
+
+
+  // Card navigation, matching Obsidian's own panes: plain click opens in the
+  // current leaf, cmd/ctrl click in a new tab (cmd+alt in a split), middle
+  // click in a new tab, and right click offers the same choices as a menu.
+  private bindCardOpen(card: HTMLElement, file: TFile): void {
+    card.addEventListener("click", (evt) => {
+      void this.app.workspace.getLeaf(Keymap.isModEvent(evt)).openFile(file);
+    });
+    card.addEventListener("auxclick", (evt) => {
+      if (evt.button === 1) void this.app.workspace.getLeaf("tab").openFile(file);
+    });
+    card.addEventListener("contextmenu", (evt) => {
+      evt.preventDefault();
+      const menu = new Menu();
+      menu.addItem((i) =>
+        i.setTitle("Open in new tab").onClick(() => {
+          void this.app.workspace.getLeaf("tab").openFile(file);
+        }),
+      );
+      menu.addItem((i) =>
+        i.setTitle("Open to the right").onClick(() => {
+          void this.app.workspace.getLeaf("split").openFile(file);
+        }),
+      );
+      menu.addItem((i) =>
+        i.setTitle("Open here").onClick(() => {
+          void this.app.workspace.getLeaf(false).openFile(file);
+        }),
+      );
+      menu.showAtMouseEvent(evt);
+    });
+  }
+
   render(): void {
     if (!this.listEl) return;
     // A search is active — its (async) results own the list; don't clobber them.
     if (this.searchQuery) return;
-    const active = this.app.workspace.getActiveFile();
+    const active = this.anchorFile();
     this.listEl.empty();
 
     if (!active || active.extension !== "md") {
@@ -203,6 +287,7 @@ export class RelatedNotesView extends ItemView {
     this.subtitleEl.empty();
     this.subtitleEl.appendText("Based on ");
     this.subtitleEl.createSpan({ cls: "rn-based-on", text: active.basename });
+    if (this.pinnedFile) this.subtitleEl.appendText(" (pinned)");
 
     this.renderTagChips(active);
 
@@ -301,6 +386,7 @@ export class RelatedNotesView extends ItemView {
     this.subtitleEl.empty();
     this.subtitleEl.appendText("Linked from ");
     this.subtitleEl.createSpan({ cls: "rn-based-on", text: active.basename });
+    if (this.pinnedFile) this.subtitleEl.appendText(" (pinned)");
 
     const resolved = this.app.metadataCache.resolvedLinks[active.path] ?? {};
     const targets: TFile[] = [];
@@ -328,9 +414,7 @@ export class RelatedNotesView extends ItemView {
     if (parentPath.length > 0 && parentPath !== "/") {
       card.createDiv({ cls: "rn-path", text: parentPath });
     }
-    card.addEventListener("click", () => {
-      void this.app.workspace.getLeaf(false).openFile(file);
-    });
+    this.bindCardOpen(card, file);
   }
 
   // Semantic search: rank notes by similarity to the typed query (keyword fallback
@@ -426,9 +510,7 @@ export class RelatedNotesView extends ItemView {
     }
     const rel = relativeTime(file.stat.mtime);
     if (rel) card.createDiv({ cls: "rn-recency", text: `edited ${rel}` });
-    card.addEventListener("click", () => {
-      void this.app.workspace.getLeaf(false).openFile(file);
-    });
+    this.bindCardOpen(card, file);
   }
 
   private renderCard(item: RankedNote, prevPct: number | null = null): void {
@@ -505,9 +587,7 @@ export class RelatedNotesView extends ItemView {
       if (rel) card.createDiv({ cls: "rn-recency", text: `edited ${rel}` });
     }
 
-    card.addEventListener("click", () => {
-      void this.app.workspace.getLeaf(false).openFile(item.file);
-    });
+    this.bindCardOpen(card, item.file);
   }
 
   // Human label for a why-reason. Names the top shared tag for the shared-tags kind.
