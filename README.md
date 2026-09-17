@@ -309,6 +309,27 @@ repository in [BRAT](https://github.com/TfTHacker/obsidian42-brat), or download
 [latest release](https://github.com/Saiki77/smart-related-notes/releases) into
 `.obsidian/plugins/smart-related-notes/` yourself.
 
+## What the plugin touches, and why
+
+An automated review of a release flags four capabilities; each is there on
+purpose:
+
+- **Filesystem access outside the vault**: the reader's engine and models
+  (1 to 5 GB) live under `~/.cache/smart-related-notes/`, never inside the
+  vault, so sync tools and backups are not dragged through them. Nothing
+  else outside the vault is read or written; the optional offline setup
+  additionally reads your Downloads folder, only while its dialog is open.
+- **Shell or process execution**: the plugin itself never runs commands.
+  The flag comes from llama.cpp's Node bindings compiled into `main.js`,
+  which contain a self-test helper for their native binary.
+- **Vault enumeration**: ranking every note by meaning requires reading
+  every note; that is the product.
+- **Clipboard**: one button ("Copy links" in the offline setup) writes to
+  it. Nothing reads it.
+
+Releases carry GitHub artifact attestations, and the review's build
+verification reproduces `main.js` from this repository byte for byte.
+
 ## Requirements
 
 - Desktop only (the embedding runtime needs a desktop Electron environment).

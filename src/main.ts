@@ -1391,14 +1391,14 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         }
         ids = [...set].sort();
       } catch {
-        host.createEl("div", {
+        host.createDiv({
           cls: "setting-item-description",
           text: "Could not read the model cache.",
         });
         return;
       }
       if (ids.length === 0) {
-        host.createEl("div", {
+        host.createDiv({
           cls: "setting-item-description",
           text: "No models downloaded yet.",
         });
@@ -1539,7 +1539,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    const intro = containerEl.createEl("div", {
+    const intro = containerEl.createDiv({
       cls: "setting-item-description rn-settings-intro",
     });
     intro.createEl("strong", { text: "Smart Related Notes" });
@@ -1548,7 +1548,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         "Offline; nothing leaves your vault. Pick a model in Setup to start indexing.",
     );
     if (!this.plugin.settings.modelChosen) {
-      containerEl.createEl("div", {
+      containerEl.createDiv({
         cls: "setting-item-description rn-settings-gate",
         text: "No model chosen yet. Indexing is paused until you pick one in Setup.",
       });
@@ -1874,7 +1874,7 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         });
       });
 
-    host.createEl("div", {
+    host.createDiv({
       cls: "setting-item-description rn-sec-note",
       text: "Models cached on this device. Remove one to free disk space after switching.",
     });
@@ -2175,7 +2175,7 @@ class ReaderOfflineModal extends Modal {
   }
 
   private log(line: string): void {
-    this.logEl?.createEl("div", { text: line });
+    this.logEl?.createDiv({ text: line });
   }
 
   private finishIfComplete(): void {
@@ -2273,7 +2273,7 @@ class ReaderOfflineModal extends Modal {
       .setName("2. Wait")
       .setDesc("Imports run by themselves; nothing else to click. Renamed downloads are fine, and wrong files are refused.");
     this.watchEl = c.createEl("p", { cls: "setting-item-description" });
-    this.logEl = c.createEl("div", { cls: "setting-item-description" });
+    this.logEl = c.createDiv({ cls: "setting-item-description" });
 
     const picker = c.createEl("input", { type: "file" });
     picker.multiple = true;
