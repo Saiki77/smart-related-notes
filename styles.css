@@ -665,3 +665,18 @@
 .rn-sec .setting-item-description {
   margin-top: 0.2em;
 }
+
+/* Right column of a scored card: the pill with the folder path under it. */
+.related-notes-view .rn-card-right {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--size-2-1);
+  max-width: 45%;
+}
+.related-notes-view .rn-path-side {
+  margin-top: 0;
+  max-width: 100%;
+  text-align: right;
+}

@@ -543,10 +543,13 @@ export class RelatedNotesView extends ItemView {
 
     const top = card.createDiv({ cls: "rn-card-top" });
     top.createDiv({ cls: "rn-title", text: item.file.basename });
+    // Right column: score pill with the folder path tucked under it, so the
+    // left column stays title + pills + summary only.
+    const right = top.createDiv({ cls: "rn-card-right" });
 
     // Similarity pill: a "~" prefix flags the keyword fallback (approximate).
     const pct = Math.round(item.score * 100);
-    const pill = top.createDiv({ cls: "rn-score" });
+    const pill = right.createDiv({ cls: "rn-score" });
     pill.setText(`${item.approximate ? "~" : ""}${pct}%`);
     if (item.approximate) pill.addClass("rn-score-approx");
     // The pill is wording similarity; the ORDER is wording fused with the link
@@ -584,7 +587,7 @@ export class RelatedNotesView extends ItemView {
 
     const parentPath = item.file.parent?.path ?? "";
     if (parentPath.length > 0 && parentPath !== "/") {
-      card.createDiv({ cls: "rn-path", text: parentPath });
+      right.createDiv({ cls: "rn-path rn-path-side", text: parentPath });
     }
 
     // Summary line: the reader's one-liner when it has read this note, else the
