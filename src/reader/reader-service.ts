@@ -156,7 +156,12 @@ export class ReaderService {
 
   private refreshCounts(): void {
     const files = this.host.markdownFiles();
-    this.setStatus({ read: files.filter((f) => this.upToDate(f)).length, total: files.length });
+    const read = files.filter((f) => this.upToDate(f)).length;
+    // Only emit on change: this runs every tick, and an unchanged count must
+    // not re-render the settings row.
+    if (read !== this.status.read || files.length !== this.status.total) {
+      this.setStatus({ read, total: files.length });
+    }
   }
 
   private nextFile(): TFile | null {
@@ -170,6 +175,10 @@ export class ReaderService {
 
   private async tick(): Promise<void> {
     if (this.busy || !this.engine || this.status.state !== "ready") return;
+    // enable() often runs before the vault finished loading, so the count
+    // taken there can be 0 of 0, and a fully read vault never triggers the
+    // post-read refresh. Keep the counter honest on every tick.
+    this.refreshCounts();
     if (this.host.indexBusy()) return;
     if (Date.now() - this.host.lastUserActivity() < IDLE_MS) return;
     const file = this.nextFile();
