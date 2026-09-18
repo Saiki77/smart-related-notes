@@ -300,12 +300,6 @@
   color: var(--text-faint);
   font-size: var(--font-ui-smaller);
 }
-/* The first row inside a section already has the summary above it, so drop the
-   duplicated top border Obsidian puts on every .setting-item. Its padding is
-   kept: zeroing it clips the first card in themes that card each row. */
-.rn-sec-body > .setting-item:first-child {
-  border-top: none;
-}
 .rn-sec-body > .setting-item:last-child {
   padding-bottom: 1em;
 }

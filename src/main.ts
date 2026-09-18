@@ -109,6 +109,8 @@ export interface RelatedNotesSettings {
   structureInfluence: number; // B_MAX for the hybrid structural boost (0..0.3)
   showSummary: boolean; // keyphrase topic-label line (supersedes snippet when on)
   showRecency: boolean; // muted "edited Nd ago" line
+  showFolder: boolean; // folder path on cards
+  showWhyPills: boolean; // why-related reason pill (#tag, Co-cited, Similar text)
   pinPersist: boolean; // keep the panel's pinned note across restarts
   pinnedPath: string; // internal: last pinned note path (only meaningful with pinPersist)
   showWhatsNew: boolean; // one-time highlights popup after a feature update
@@ -162,6 +164,8 @@ export const DEFAULT_SETTINGS: RelatedNotesSettings = {
   structureInfluence: 0.15,
   showSummary: true,
   showRecency: false,
+  showFolder: true,
+  showWhyPills: true,
   pinPersist: false,
   pinnedPath: "",
   showWhatsNew: true,
@@ -1690,6 +1694,30 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       "Show a one- to two-line preview. Used when the summary line is off.",
       this.plugin.settings.showSnippet,
       (v) => (this.plugin.settings.showSnippet = v),
+      true,
+    );
+
+    this.toggle(
+      host,
+      "Show folder on cards",
+      "The note's folder, right-aligned on the pills row.",
+      this.plugin.settings.showFolder,
+      (v) => {
+        this.plugin.settings.showFolder = v;
+        this.plugin.requestPanelRender();
+      },
+      true,
+    );
+
+    this.toggle(
+      host,
+      "Show why-related pills",
+      "The small reason pill on cards, e.g. a shared tag, co-cited, or similar text. The Linked and Related chips stay either way.",
+      this.plugin.settings.showWhyPills,
+      (v) => {
+        this.plugin.settings.showWhyPills = v;
+        this.plugin.requestPanelRender();
+      },
       true,
     );
 

@@ -436,7 +436,7 @@ export class RelatedNotesView extends ItemView {
     const pills = card.createDiv({ cls: "rn-pills" });
     pills.createSpan({ cls: "rn-conn rn-conn-linked", text: "Linked" });
     const parentPath = file.parent?.path ?? "";
-    if (parentPath.length > 0 && parentPath !== "/") {
+    if (this.plugin.settings.showFolder && parentPath.length > 0 && parentPath !== "/") {
       card.createDiv({ cls: "rn-path", text: parentPath });
     }
     this.bindCardOpen(card, file);
@@ -530,7 +530,7 @@ export class RelatedNotesView extends ItemView {
     const top = card.createDiv({ cls: "rn-card-top" });
     top.createDiv({ cls: "rn-title", text: file.basename });
     const parentPath = file.parent?.path ?? "";
-    if (parentPath.length > 0 && parentPath !== "/") {
+    if (this.plugin.settings.showFolder && parentPath.length > 0 && parentPath !== "/") {
       card.createDiv({ cls: "rn-path", text: parentPath });
     }
     const rel = relativeTime(file.stat.mtime);
@@ -567,15 +567,17 @@ export class RelatedNotesView extends ItemView {
     // on the same line. keywordRank results carry no reason/connection — render
     // no pill rather than a wrong one.
     const parentPath = item.file.parent?.path ?? "";
-    const hasPath = parentPath.length > 0 && parentPath !== "/";
-    if (item.reason || item.connection || hasPath) {
+    const hasPath =
+      this.plugin.settings.showFolder && parentPath.length > 0 && parentPath !== "/";
+    const showWhy = this.plugin.settings.showWhyPills && item.reason !== undefined;
+    if (showWhy || item.connection || hasPath) {
       const pills = card.createDiv({ cls: "rn-pills" });
       if (item.connection === "linked") {
         pills.createSpan({ cls: "rn-conn rn-conn-linked", text: "Linked" });
       } else if (item.connection === "related") {
         pills.createSpan({ cls: "rn-conn", text: "Related" });
       }
-      if (item.reason) {
+      if (showWhy && item.reason) {
         const why = this.whyLabel(item.reason);
         // Skip a redundant "Linked" why when the connection pill already says it.
         if (why && !(item.reason.kind === "linked" && item.connection === "linked")) {
