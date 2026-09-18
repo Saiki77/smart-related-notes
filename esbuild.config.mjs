@@ -1,5 +1,6 @@
 import esbuild from "esbuild";
 import { builtinModules, createRequire } from "module";
+import fs from "node:fs/promises";
 import { genOrt } from "./gen-ort.mjs";
 
 const require = createRequire(import.meta.url);
@@ -179,6 +180,29 @@ const inlineReaderPlugin = {
   },
 };
 
+// styles.css, inlined: users updating by hand often replace only main.js, so
+// every CSS-only fix silently failed to arrive. main.js now injects the
+// stylesheet itself at load; the shipped styles.css stays for convention and
+// as a fallback, and the injected copy (added later in <head>) wins over a
+// stale one at equal specificity.
+const inlineStylesPlugin = {
+  name: "inline-plugin-styles",
+  setup(build) {
+    build.onResolve({ filter: /^virtual:plugin-styles$/ }, (args) => ({
+      path: args.path,
+      namespace: "plugin-styles",
+    }));
+    build.onLoad({ filter: /.*/, namespace: "plugin-styles" }, async () => {
+      const css = await fs.readFile("styles.css", "utf8");
+      return {
+        contents: `export default ${JSON.stringify(css)};`,
+        loader: "js",
+        watchFiles: ["styles.css"],
+      };
+    });
+  },
+};
+
 const ctx = await esbuild.context({
   entryPoints: ["src/main.ts"],
   bundle: true,
@@ -202,7 +226,7 @@ const ctx = await esbuild.context({
   treeShaking: true,
   minify: prod,
   logLevel: "info",
-  plugins: [inlineWorkerPlugin, inlineReaderPlugin],
+  plugins: [inlineWorkerPlugin, inlineReaderPlugin, inlineStylesPlugin],
 });
 
 // `node esbuild.config.mjs` (dev) watches with inline sourcemaps;

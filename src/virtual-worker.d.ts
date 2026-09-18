@@ -13,3 +13,10 @@ declare module "virtual:reader-engine" {
   const engineSource: string;
   export default engineSource;
 }
+
+// The plugin stylesheet, inlined so a hand-updated install that replaces only
+// main.js still gets every CSS change; injected at load in onload().
+declare module "virtual:plugin-styles" {
+  const css: string;
+  export default css;
+}

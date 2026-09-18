@@ -23,6 +23,7 @@ import {
 import { ReaderService, type ReaderHost, type ReaderPace } from "./reader/reader-service";
 import { WhatsNewModal, WHATS_NEW_ID } from "./whats-new";
 import readerEngineSource from "virtual:reader-engine";
+import pluginStyles from "virtual:plugin-styles";
 import {
   RUNGS,
   removeAssets,
@@ -316,6 +317,29 @@ export default class RelatedNotesPlugin extends Plugin {
   private dirty = new Set<string>();
 
   async onload(): Promise<void> {
+    // Self-heal styles.css: a manual update that replaces only main.js leaves
+    // the stylesheet stale, silently losing every CSS fix. Obsidian loads the
+    // file itself (injecting CSS is against plugin guidelines), so when the
+    // on-disk copy differs from the one this main.js was built with, rewrite
+    // it and ask for one reload.
+    void (async () => {
+      try {
+        const cssPath = normalizePath(`${this.pluginDir()}/styles.css`);
+        const onDisk = (await this.app.vault.adapter.exists(cssPath))
+          ? await this.app.vault.adapter.read(cssPath)
+          : "";
+        if (onDisk !== pluginStyles) {
+          await this.app.vault.adapter.write(cssPath, pluginStyles);
+          new Notice(
+            "Smart Related Notes: styles.css was from another version and has been refreshed. Reload Obsidian once to apply.",
+            10000,
+          );
+        }
+      } catch (e) {
+        console.warn("[related-notes] styles self-heal:", e);
+      }
+    })();
+
     const saved = (await this.loadData()) as Partial<RelatedNotesSettings> | null;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
 
@@ -1545,7 +1569,8 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     intro.createEl("strong", { text: "Smart Related Notes" });
     intro.appendText(
       " ranks your vault by meaning, with a model that runs entirely on this machine. " +
-        "Offline; nothing leaves your vault. Pick a model in Setup to start indexing.",
+        "Offline; nothing leaves your vault." +
+        (this.plugin.settings.modelChosen ? "" : " Pick a model in Setup to start indexing."),
     );
     if (!this.plugin.settings.modelChosen) {
       containerEl.createDiv({
