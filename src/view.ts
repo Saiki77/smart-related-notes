@@ -260,7 +260,13 @@ export class RelatedNotesView extends ItemView {
   // click in a new tab, and right click offers the same choices as a menu.
   private bindCardOpen(card: HTMLElement, file: TFile): void {
     card.addEventListener("click", (evt) => {
-      void this.app.workspace.getLeaf(Keymap.isModEvent(evt)).openFile(file);
+      // The default target is a setting; a mod-click flips between here and
+      // a new tab relative to it. Split/window mod-combos pass through.
+      const mod = Keymap.isModEvent(evt);
+      const newTab = this.plugin.settings.openInNewTab;
+      const target =
+        mod === false ? (newTab ? "tab" : false) : mod === "tab" ? (newTab ? false : "tab") : mod;
+      void this.app.workspace.getLeaf(target).openFile(file);
     });
     card.addEventListener("auxclick", (evt) => {
       if (evt.button === 1) void this.app.workspace.getLeaf("tab").openFile(file);

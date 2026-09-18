@@ -113,6 +113,7 @@ export interface RelatedNotesSettings {
   showWhyPills: boolean; // why-related reason pill (Co-cited, Similar text, via ...)
   showTagPills: boolean; // the shared-tag reason pill (#tag) specifically
   linkedFirst: boolean; // sort directly linked notes above the rest
+  openInNewTab: boolean; // plain card click opens a new tab (mod-click then opens here)
   pinPersist: boolean; // keep the panel's pinned note across restarts
   pinnedPath: string; // internal: last pinned note path (only meaningful with pinPersist)
   showWhatsNew: boolean; // one-time highlights popup after a feature update
@@ -170,6 +171,7 @@ export const DEFAULT_SETTINGS: RelatedNotesSettings = {
   showWhyPills: true,
   showTagPills: true,
   linkedFirst: false,
+  openInNewTab: false,
   pinPersist: false,
   pinnedPath: "",
   showWhatsNew: true,
@@ -1735,6 +1737,15 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
         this.plugin.requestPanelRender();
       },
       true,
+    );
+
+    this.toggle(
+      host,
+      "Open cards in a new tab",
+      "Where a plain click on a card opens the note. Cmd/ctrl click does the opposite of this setting; middle click always opens a new tab, and right click offers all choices.",
+      this.plugin.settings.openInNewTab,
+      (v) => (this.plugin.settings.openInNewTab = v),
+      false,
     );
 
     this.toggle(
