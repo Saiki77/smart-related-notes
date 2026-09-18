@@ -327,8 +327,13 @@ export class RelatedNotesView extends ItemView {
       return;
     }
 
+    // Optional hard priority for the user's own links: linked cards first,
+    // order inside each group untouched (rank() already ordered them).
+    const ordered = this.plugin.settings.linkedFirst
+      ? [...ranked.filter((r) => r.connection === "linked"), ...ranked.filter((r) => r.connection !== "linked")]
+      : ranked;
     let prevPct: number | null = null;
-    for (const item of ranked) {
+    for (const item of ordered) {
       this.renderCard(item, prevPct);
       prevPct = Math.round(item.score * 100);
     }
@@ -569,7 +574,11 @@ export class RelatedNotesView extends ItemView {
     const parentPath = item.file.parent?.path ?? "";
     const hasPath =
       this.plugin.settings.showFolder && parentPath.length > 0 && parentPath !== "/";
-    const showWhy = this.plugin.settings.showWhyPills && item.reason !== undefined;
+    const showWhy =
+      item.reason !== undefined &&
+      (item.reason.kind === "shared-tags"
+        ? this.plugin.settings.showTagPills
+        : this.plugin.settings.showWhyPills);
     if (showWhy || item.connection || hasPath) {
       const pills = card.createDiv({ cls: "rn-pills" });
       if (item.connection === "linked") {

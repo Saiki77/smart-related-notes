@@ -110,7 +110,9 @@ export interface RelatedNotesSettings {
   showSummary: boolean; // keyphrase topic-label line (supersedes snippet when on)
   showRecency: boolean; // muted "edited Nd ago" line
   showFolder: boolean; // folder path on cards
-  showWhyPills: boolean; // why-related reason pill (#tag, Co-cited, Similar text)
+  showWhyPills: boolean; // why-related reason pill (Co-cited, Similar text, via ...)
+  showTagPills: boolean; // the shared-tag reason pill (#tag) specifically
+  linkedFirst: boolean; // sort directly linked notes above the rest
   pinPersist: boolean; // keep the panel's pinned note across restarts
   pinnedPath: string; // internal: last pinned note path (only meaningful with pinPersist)
   showWhatsNew: boolean; // one-time highlights popup after a feature update
@@ -166,6 +168,8 @@ export const DEFAULT_SETTINGS: RelatedNotesSettings = {
   showRecency: false,
   showFolder: true,
   showWhyPills: true,
+  showTagPills: true,
+  linkedFirst: false,
   pinPersist: false,
   pinnedPath: "",
   showWhatsNew: true,
@@ -1711,14 +1715,38 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
 
     this.toggle(
       host,
+      "Show tag pills",
+      "The shared-tag pill on cards, e.g. #personal.",
+      this.plugin.settings.showTagPills,
+      (v) => {
+        this.plugin.settings.showTagPills = v;
+        this.plugin.requestPanelRender();
+      },
+      true,
+    );
+
+    this.toggle(
+      host,
       "Show why-related pills",
-      "The small reason pill on cards, e.g. a shared tag, co-cited, or similar text. The Linked and Related chips stay either way.",
+      "The other reason pills on cards: co-cited, similar text, or the note that bridges two others. The Linked and Related chips stay either way.",
       this.plugin.settings.showWhyPills,
       (v) => {
         this.plugin.settings.showWhyPills = v;
         this.plugin.requestPanelRender();
       },
       true,
+    );
+
+    this.toggle(
+      host,
+      "Put linked notes on top",
+      "Cards you already link to or from sort above everything else; order inside each group is unchanged.",
+      this.plugin.settings.linkedFirst,
+      (v) => {
+        this.plugin.settings.linkedFirst = v;
+        this.plugin.requestPanelRender();
+      },
+      false,
     );
 
     this.toggle(
