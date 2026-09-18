@@ -640,17 +640,9 @@
 }
 
 
-/* Right column of a scored card: the pill with the folder path under it. */
-.related-notes-view .rn-card-right {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: row-reverse;
-  align-items: center;
-  gap: var(--size-2-2);
-  max-width: 55%;
-}
-.related-notes-view .rn-path-side {
-  margin-top: 0;
-  max-width: 100%;
+/* Folder path: right-aligned at the end of the pills row, under the pill. */
+.related-notes-view .rn-path-row {
+  margin: 0 0 0 auto;
+  min-width: 0;
   text-align: right;
 }

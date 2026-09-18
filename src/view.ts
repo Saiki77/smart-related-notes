@@ -543,13 +543,10 @@ export class RelatedNotesView extends ItemView {
 
     const top = card.createDiv({ cls: "rn-card-top" });
     top.createDiv({ cls: "rn-title", text: item.file.basename });
-    // Right column: score pill with the folder path tucked under it, so the
-    // left column stays title + pills + summary only.
-    const right = top.createDiv({ cls: "rn-card-right" });
 
     // Similarity pill: a "~" prefix flags the keyword fallback (approximate).
     const pct = Math.round(item.score * 100);
-    const pill = right.createDiv({ cls: "rn-score" });
+    const pill = top.createDiv({ cls: "rn-score" });
     pill.setText(`${item.approximate ? "~" : ""}${pct}%`);
     if (item.approximate) pill.addClass("rn-score-approx");
     // The pill is wording similarity; the ORDER is wording fused with the link
@@ -566,10 +563,12 @@ export class RelatedNotesView extends ItemView {
       );
     }
 
-    // Why-related + connection pills, derived from the structural signals that
-    // fired. keywordRank results carry no reason/connection — render no pill rather
-    // than a wrong one.
-    if (item.reason || item.connection) {
+    // Second row: connection/why pills on the left, folder path right-aligned
+    // on the same line. keywordRank results carry no reason/connection — render
+    // no pill rather than a wrong one.
+    const parentPath = item.file.parent?.path ?? "";
+    const hasPath = parentPath.length > 0 && parentPath !== "/";
+    if (item.reason || item.connection || hasPath) {
       const pills = card.createDiv({ cls: "rn-pills" });
       if (item.connection === "linked") {
         pills.createSpan({ cls: "rn-conn rn-conn-linked", text: "Linked" });
@@ -583,11 +582,7 @@ export class RelatedNotesView extends ItemView {
           pills.createSpan({ cls: "rn-why", text: why });
         }
       }
-    }
-
-    const parentPath = item.file.parent?.path ?? "";
-    if (parentPath.length > 0 && parentPath !== "/") {
-      right.createDiv({ cls: "rn-path rn-path-side", text: parentPath });
+      if (hasPath) pills.createDiv({ cls: "rn-path rn-path-row", text: parentPath });
     }
 
     // Summary line: the reader's one-liner when it has read this note, else the
