@@ -111,7 +111,9 @@ export class VaultMapView extends ItemView {
     for (const p of ordered) {
       const off = this.hidden.has(p.cluster);
       const circle = svg.createSvg("circle", {
-        cls: off ? "rn-map-dot is-off" : "rn-map-dot",
+        // createSvg does not split space-separated classes the way createEl
+        // does; a combined string throws InvalidCharacterError. Pass a list.
+        cls: off ? ["rn-map-dot", "is-off"] : "rn-map-dot",
         attr: {
           cx: sx(p.x).toFixed(1),
           cy: sy(p.y).toFixed(1),
