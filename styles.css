@@ -301,10 +301,10 @@
   font-size: var(--font-ui-smaller);
 }
 /* The first row inside a section already has the summary above it, so drop the
-   duplicated top border Obsidian puts on every .setting-item. */
+   duplicated top border Obsidian puts on every .setting-item. Its padding is
+   kept: zeroing it clips the first card in themes that card each row. */
 .rn-sec-body > .setting-item:first-child {
   border-top: none;
-  padding-top: 0;
 }
 .rn-sec-body > .setting-item:last-child {
   padding-bottom: 1em;
@@ -639,41 +639,15 @@
   to { margin-left: 70%; }
 }
 
-/* Settings polish: roomier section headers that read as native rows. */
-.rn-sec-summary {
-  padding: 0.85em 0.2em;
-  border-radius: var(--radius-s);
-}
-.rn-sec-summary:hover {
-  background: var(--background-modifier-hover);
-}
-.rn-sec-title {
-  font-size: var(--font-ui-medium);
-}
-.rn-sec[open] {
-  padding-bottom: var(--size-4-2);
-}
-
-/* Breathing room inside sections: themes that card each row keep their look,
-   the content just stops hugging the edges. */
-.rn-sec .setting-item {
-  padding: 0.85em 0.8em;
-}
-.rn-sec[open] > .rn-sec-summary {
-  margin-bottom: 0.4em;
-}
-.rn-sec .setting-item-description {
-  margin-top: 0.2em;
-}
 
 /* Right column of a scored card: the pill with the folder path under it. */
 .related-notes-view .rn-card-right {
   flex: 0 0 auto;
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: var(--size-2-1);
-  max-width: 45%;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: var(--size-2-2);
+  max-width: 55%;
 }
 .related-notes-view .rn-path-side {
   margin-top: 0;
