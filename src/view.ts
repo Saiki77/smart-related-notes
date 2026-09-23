@@ -183,6 +183,19 @@ export class RelatedNotesView extends ItemView {
       this.statusEl.removeClass("rn-status-error");
       return;
     }
+    // A model download owns the status line while it runs (first launch, or
+    // after a model switch): name, percentage, and the same bar the reader
+    // settings use.
+    if ((p.status === "building" || p.status === "loading") && p.download) {
+      const pct = Math.round((p.download.loaded / p.download.total) * 100);
+      const mb = (p.download.total / 1e6).toFixed(0);
+      this.statusEl.setText(`Downloading model: ${p.download.file} ${pct}% of ${mb} MB`);
+      const bar = this.statusEl.createDiv({ cls: "rn-reader-bar" });
+      const fill = bar.createDiv({ cls: "rn-reader-bar-fill" });
+      fill.setCssProps({ "--rn-reader-pct": `${pct}%` });
+      this.statusEl.removeClass("rn-status-error");
+      return;
+    }
     if (p.status === "building") {
       const pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
       this.statusEl.setText(`Indexing… ${pct}% (${p.done}/${p.total})`);

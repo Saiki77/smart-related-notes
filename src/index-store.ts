@@ -325,6 +325,9 @@ export interface IndexProgress {
   done: number;
   total: number;
   message?: string;
+  // Set while the embedding model itself is downloading (first run, or after
+  // a model switch): the file currently transferring and its byte counts.
+  download?: { file: string; loaded: number; total: number };
 }
 
 export interface IndexStoreOptions {
@@ -1047,6 +1050,38 @@ export class IndexStore {
 
   getProgress(): IndexProgress {
     return this.progress;
+  }
+
+  // Bridges transformers.js' model-file progress events into IndexProgress so
+  // the panel can show a real download bar. Only sizeable files register (the
+  // config/tokenizer JSONs flash by in milliseconds), and only whole-percent
+  // changes emit, so listeners are not spammed per network chunk.
+  private lastDownloadPct = -1;
+
+  private wrapProgress(cb?: ProgressCallback): ProgressCallback {
+    return (info) => {
+      if (
+        info.status === "progress" &&
+        info.file !== undefined &&
+        typeof info.loaded === "number" &&
+        typeof info.total === "number" &&
+        info.total > 1_000_000
+      ) {
+        const pct = Math.floor((info.loaded / info.total) * 100);
+        if (pct !== this.lastDownloadPct) {
+          this.lastDownloadPct = pct;
+          this.setProgress({
+            download: { file: info.file, loaded: info.loaded, total: info.total },
+          });
+        }
+      } else if (info.status === "ready" || info.status === "done") {
+        if (this.progress.download !== undefined) {
+          this.lastDownloadPct = -1;
+          this.setProgress({ download: undefined });
+        }
+      }
+      cb?.(info);
+    };
   }
 
   private setProgress(p: Partial<IndexProgress>): void {
@@ -1820,9 +1855,10 @@ export class IndexStore {
   }
 
   private async buildInner(
-    onProgress?: ProgressCallback,
+    onProgressRaw?: ProgressCallback,
     force = false,
   ): Promise<void> {
+    const onProgress = this.wrapProgress(onProgressRaw);
     this.building = true; // synchronous, so concurrent build() callers see it
     this.buildStale = false;
     try {
@@ -2232,7 +2268,8 @@ export class IndexStore {
     void this.updateFile(file);
   }
 
-  private async flushPending(onProgress?: ProgressCallback): Promise<void> {
+  private async flushPending(onProgressRaw?: ProgressCallback): Promise<void> {
+    const onProgress = this.wrapProgress(onProgressRaw);
     if (this.pending.size === 0) return;
     const paths = Array.from(this.pending);
     this.pending.clear();
