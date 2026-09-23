@@ -36,7 +36,20 @@ export interface EmbedRequest {
   kind: EmbedKind;
 }
 
-export type WorkerRequest = InitRequest | EmbedRequest;
+// Reply to a FetchRequestMessage: the renderer fetched the URL on the
+// worker's behalf. Negative ids, chosen by the worker, so they can never
+// collide with the renderer's own request ids.
+export interface FetchResultMessage {
+  id: number;
+  type: "fetchResult";
+  ok: boolean;
+  status: number;
+  headers: Record<string, string>;
+  buffer?: ArrayBuffer;
+  error?: string;
+}
+
+export type WorkerRequest = InitRequest | EmbedRequest | FetchResultMessage;
 
 // --- worker -> renderer ------------------------------------------------------
 
@@ -71,8 +84,19 @@ export interface ErrorResponse {
   message: string;
 }
 
+// Worker -> renderer: fetch this URL for me. Sent only on ancient Electron
+// runtimes whose worker scope lacks the Fetch globals; the renderer (which
+// always has them, plus the system proxy configuration) downloads and
+// replies with a FetchResultMessage carrying the transferred bytes.
+export interface FetchRequestMessage {
+  id: number; // negative, worker-assigned
+  type: "fetchRequest";
+  url: string;
+}
+
 export type WorkerResponse =
   | ReadyResponse
   | ProgressResponse
   | ResultResponse
-  | ErrorResponse;
+  | ErrorResponse
+  | FetchRequestMessage;

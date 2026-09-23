@@ -31,9 +31,11 @@ import { modelUsesWholeNote as usesWholeNote } from "./model-spec";
 import type { DevicePref, EmbedKind, ProgressCallback } from "./model-spec";
 import type {
   EmbedRequest,
+  FetchResultMessage,
   InitRequest,
   WorkerResponse,
 } from "./worker/protocol";
+import { requestUrl } from "obsidian";
 
 // WASM worker-thread count, set by the plugin from the "Indexing speed" setting.
 // 1 = single-threaded (slowest); higher = faster full reindexes. Read at every
@@ -222,6 +224,10 @@ class WorkerSession {
   }
 
   private handleMessage(msg: WorkerResponse): void {
+    if (msg.type === "fetchRequest") {
+      void this.serveFetch(msg.id, msg.url);
+      return;
+    }
     const entry = this.pending.get(msg.id);
     if (!entry) return;
     if (msg.type === "progress") {
@@ -248,6 +254,45 @@ class WorkerSession {
     entry.resolve(rows);
   }
 
+  // Download a model file on the worker's behalf (see FetchRequestMessage).
+  // Renderer fetch first (streams, system proxy, enterprise certificates),
+  // requestUrl as fallback; the bytes transfer, not copy.
+  private async serveFetch(id: number, url: string): Promise<void> {
+    const reply = (msg: FetchResultMessage, transfer?: Transferable[]): void => {
+      if (this.dead) return;
+      this.worker.postMessage(msg, transfer ?? []);
+    };
+    try {
+      // window.fetch, deliberately: it streams and rides Chromium's proxy and
+      // certificate handling; requestUrl below is the buffered fallback.
+      const res = await window.fetch(url);
+      const buffer = await res.arrayBuffer();
+      const headers: Record<string, string> = {};
+      res.headers.forEach((v, k) => {
+        headers[k] = v;
+      });
+      reply({ id, type: "fetchResult", ok: res.ok, status: res.status, headers, buffer }, [buffer]);
+    } catch {
+      try {
+        const res = await requestUrl({ url, throw: false });
+        const buffer = res.arrayBuffer;
+        reply(
+          { id, type: "fetchResult", ok: res.status >= 200 && res.status < 300, status: res.status, headers: res.headers, buffer },
+          [buffer],
+        );
+      } catch (e) {
+        reply({
+          id,
+          type: "fetchResult",
+          ok: false,
+          status: 0,
+          headers: {},
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+  }
+
   private fail(err: Error): void {
     this.dead = true;
     const entries = [...this.pending.values()];
@@ -267,6 +312,10 @@ export class EmbeddingEngine {
   // Fires after an idle unload actually released the worker, so the plugin can
   // trim caches that only pay off while the engine is warm.
   onIdleUnload: (() => void) | null = null;
+  // Set when init failed for a reason that cannot succeed on retry (missing
+  // Fetch globals in the worker realm); every later ensureSession rejects
+  // with it instead of respawning a worker per note.
+  private permanentInitError: Error | null = null;
 
   private session: WorkerSession | null = null;
   private sessionPromise: Promise<WorkerSession> | null = null;
@@ -397,8 +446,24 @@ export class EmbeddingEngine {
     if (this.disposed) {
       return Promise.reject(new Error("engine disposed"));
     }
+    if (this.permanentInitError) return Promise.reject(this.permanentInitError);
     if (this.sessionPromise) return this.sessionPromise;
-    const promise = this.spawnAndInit(this.generation, onProgress);
+    const promise = this.spawnAndInit(this.generation, onProgress).catch((e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      // A worker realm without the Fetch globals fails identically on every
+      // spawn: reinstalling Obsidian from a fresh installer is the fix, not
+      // another respawn per note. Latch the error for this engine instance.
+      if (/(Headers|Request|Response|fetch) is not defined/.test(msg)) {
+        this.permanentInitError = new Error(
+          "The embedding engine cannot start: this Obsidian runtime is missing web APIs " +
+            "(its installer predates them; in-app updates never replace the runtime). " +
+            "Download a fresh installer from obsidian.md/download and reinstall. " +
+            `Original error: ${msg}`,
+        );
+        throw this.permanentInitError;
+      }
+      throw e;
+    });
     this.sessionPromise = promise;
     return promise;
   }

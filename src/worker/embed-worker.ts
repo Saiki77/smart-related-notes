@@ -18,6 +18,9 @@
 // (nodeIntegrationInWorker environments), the shim keeps transformers on the web
 // branch. Without one (the normal case) it is a harmless no-op.
 import "../ort-shim";
+// Fetch-global stand-ins for ancient Electron runtimes; no-op on current ones.
+// Must be evaluated before transformers, which assumes the globals exist.
+import { hadFetch, hasCaches, BufferedResponse } from "./fetch-shims";
 import {
   pipeline,
   env,
@@ -26,6 +29,7 @@ import {
 import { modelSpec, type EmbedKind, type ProgressInfo } from "../model-spec";
 import type {
   EmbedRequest,
+  FetchResultMessage,
   InitRequest,
   WorkerRequest,
   WorkerResponse,
@@ -125,7 +129,10 @@ function configureEnv(req: InitRequest, numThreads: number): void {
   // Cache model weights in the browser Cache API. A blob: worker inherits the
   // renderer's origin, so this is the SAME "transformers-cache" the pre-worker
   // engine populated — respawns re-use the downloaded weights, no re-download.
-  env.useBrowserCache = true;
+  // The Cache API is missing from the same ancient worker realms that lack
+  // fetch; transformers must not touch it there (the model then re-downloads
+  // per session, which beats not loading at all).
+  env.useBrowserCache = hasCaches;
 
   // The glue must be import()able from inside this (blob:) worker, so wrap the
   // transferred source text in the worker's own blob URL. NOT revoked: the
@@ -292,8 +299,50 @@ async function handleEmbed(req: EmbedRequest): Promise<void> {
   );
 }
 
+// --- fetch bridge -----------------------------------------------------------
+// When this realm has no fetch at all (ancient installer runtimes), model
+// downloads are delegated to the renderer: worker posts a fetchRequest, the
+// renderer downloads with ITS fetch (present, and proxy-aware) and posts the
+// bytes back. Ids are negative so they can never collide with request ids.
+const fetchPending = new Map<
+  number,
+  { resolve: (r: BufferedResponse) => void; reject: (e: Error) => void }
+>();
+let nextFetchId = -1;
+
+function bridgedFetch(input: unknown): Promise<BufferedResponse> {
+  const url =
+    typeof input === "string" ? input : ((input as { url?: string }).url ?? String(input));
+  return new Promise((resolve, reject) => {
+    const id = nextFetchId--;
+    fetchPending.set(id, { resolve, reject });
+    ctx.postMessage({ id, type: "fetchRequest", url } as unknown as WorkerResponse);
+  });
+}
+
+if (!hadFetch) {
+  (self as unknown as Record<string, unknown>).fetch = bridgedFetch;
+}
+
+function handleFetchResult(msg: FetchResultMessage): void {
+  const entry = fetchPending.get(msg.id);
+  if (!entry) return;
+  fetchPending.delete(msg.id);
+  if (msg.error !== undefined && msg.buffer === undefined) {
+    entry.reject(new Error(msg.error));
+    return;
+  }
+  entry.resolve(
+    new BufferedResponse("", msg.status, msg.headers, msg.buffer ?? new ArrayBuffer(0)),
+  );
+}
+
 ctx.onmessage = (e: MessageEvent): void => {
   const req = e.data as WorkerRequest;
+  if (req.type === "fetchResult") {
+    handleFetchResult(req);
+    return;
+  }
   const run = req.type === "init" ? handleInit(req) : handleEmbed(req);
   run.catch((err: unknown) => {
     ctx.postMessage({
