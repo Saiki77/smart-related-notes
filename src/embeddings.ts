@@ -27,6 +27,7 @@ export {
 } from "./model-spec";
 
 import workerSource from "virtual:embed-worker";
+import { isCapacityError } from "./embedding-errors";
 import { modelUsesWholeNote as usesWholeNote } from "./model-spec";
 import type { DevicePref, EmbedKind, ProgressCallback } from "./model-spec";
 import type {
@@ -552,6 +553,13 @@ export class EmbeddingEngine {
       try {
         return await session.embed(texts, kind);
       } catch (e) {
+        // A capacity error may leave the runtime unable to serve smaller inputs.
+        // Drop the failing session, not a newer session from a concurrent request.
+        // Propagate the error so callers can reduce input size before retrying.
+        if (isCapacityError(e)) {
+          this.dropSession(session);
+          throw e;
+        }
         // A dead session (wasm fault, worker crash) must ALWAYS be dropped and
         // terminated — otherwise the zombie realm stays the engine's current
         // session, pinning its heap. One respawn+retry keeps a single hiccup

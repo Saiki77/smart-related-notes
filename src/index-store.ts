@@ -6,6 +6,7 @@ import {
   type ProgressCallback,
 } from "./embeddings";
 import { yieldToUI } from "./async-yield";
+import { isCapacityError } from "./embedding-errors";
 import { GraphSignals, zNormaliser } from "./graph-signals";
 import {
   cosineSimilarity,
@@ -89,6 +90,8 @@ const EMPTY_AREAS: ReadonlySet<string> = new Set<string>(); // shared "no isolat
 // only length limit. Kept modest so a token-dense note (CJK/code) stays under the
 // model's positional limit rather than erroring at the ONNX layer.
 const WHOLE_NOTE_CHARS = 10000;
+// CJK text generally carries more tokens per character. This floor is heuristic.
+const WHOLE_NOTE_CJK_CHARS = 4000;
 const IDEA_UNIT_CHARS = 3000; // a single idea (~200-500 words) fits whole at the model
 
 // How a note is cut into embed inputs. "auto" is the strategy the model asks for;
@@ -96,21 +99,25 @@ const IDEA_UNIT_CHARS = 3000; // a single idea (~200-500 words) fits whole at th
 // handle, split at boundaries the note already has. See embedNoteDegrading.
 type ChunkMode = "auto" | "ideas" | "windows";
 
-// True when an embed failed because the input was too big for the runtime, rather
-// than because the runtime is unavailable. Retrying with smaller inputs only helps
-// for the former; for a missing model or a dead worker it would just repeat a slow
-// failure once per tier per note. The wasm heap runs out in several different ways
-// depending on which allocation overflows first, hence the several spellings.
-function isCapacityError(e: unknown): boolean {
-  const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
-  return (
-    msg.includes("memory access out of bounds") ||
-    msg.includes("bad_alloc") ||
-    msg.includes("integer overflow") ||
-    msg.includes("out of memory") ||
-    msg.includes("cannot enlarge memory") ||
-    msg.includes("maximum call stack")
-  );
+// Bound the actual prefix: CJK characters cost more of the shared budget.
+// Text after the cutoff cannot increase the allowance for earlier CJK text.
+function wholeNoteCharBudget(text: string): number {
+  const maxLength = Math.min(text.length, WHOLE_NOTE_CHARS);
+  const cjkCost = WHOLE_NOTE_CHARS / WHOLE_NOTE_CJK_CHARS;
+  let used = 0;
+  for (let i = 0; i < maxLength; i++) {
+    const c = text.charCodeAt(i);
+    // CJK punctuation, kana, Han, Hangul, compatibility and fullwidth forms.
+    const isCjk =
+      (c >= 0x3000 && c <= 0x9fff) ||
+      (c >= 0xac00 && c <= 0xd7a3) ||
+      (c >= 0xf900 && c <= 0xfaff) ||
+      (c >= 0xff00 && c <= 0xffef);
+    const cost = isCjk ? cjkCost : 1;
+    if (used + cost > WHOLE_NOTE_CHARS) return i;
+    used += cost;
+  }
+  return maxLength;
 }
 // Tiny DE+EN stopword set for lexical-cohesion overlap (content words only).
 const IDEA_STOPWORDS = new Set([
@@ -1662,11 +1669,15 @@ export class IndexStore {
     // idea vectors instead (meanOf) — no whole-note embed, nothing truncated.
     if (!skipWholeNote) {
       const cleanBody = stripMarkdown(body);
-      const wholeText = [`${file.basename}.`, meta, cleanBody]
+      const joined = [`${file.basename}.`, meta, cleanBody]
         .filter((s) => s.length > 0)
-        .join(" ")
-        .slice(0, WHOLE_NOTE_CHARS);
-      chunks.push({ text: file.basename, isTitle: true, isMean: true, embedText: wholeText });
+        .join(" ");
+      chunks.push({
+        text: file.basename,
+        isTitle: true,
+        isMean: true,
+        embedText: joined.slice(0, wholeNoteCharBudget(joined)),
+      });
     }
     chunks.push({ text: file.basename, isTitle: true, embedText: titleEmbed });
 
@@ -2140,6 +2151,8 @@ export class IndexStore {
   //                  that nothing realistic can exceed it.
   // A note that fails all three is skipped with its path named, and the build
   // continues. Cost is paid only by notes that actually fail.
+  // The engine drops the failed worker after capacity errors, including at the
+  // last tier, so retries and subsequent notes can start with a fresh runtime.
   private async embedNoteDegrading(
     file: TFile,
     chunks: NoteChunk[],
