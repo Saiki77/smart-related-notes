@@ -1641,7 +1641,9 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       .setDesc(
         progress.status === "building"
           ? `Indexing… ${progress.done}/${progress.total}`
-          : `${this.plugin.store.count} notes embedded.`,
+          : progress.skipped
+            ? `${this.plugin.store.count} notes embedded, ${progress.skipped} skipped. The developer console names each skipped note.`
+            : `${this.plugin.store.count} notes embedded.`,
       )
       .addButton((b) =>
         b

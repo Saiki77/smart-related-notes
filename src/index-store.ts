@@ -329,8 +329,13 @@ export type IndexStatus = "idle" | "loading" | "building" | "ready" | "error";
 
 export interface IndexProgress {
   status: IndexStatus;
+  // While building: notes looked at so far. Once ready: notes actually IN the
+  // index, so a build where many notes failed cannot read as complete.
   done: number;
   total: number;
+  // Notes that could not be indexed (unreadable, or the embed failed at every
+  // split). Each one is named in the console when it fails.
+  skipped?: number;
   message?: string;
   // Set while the embedding model itself is downloading (first run, or after
   // a model switch): the file currently transferring and its byte counts.
@@ -904,6 +909,9 @@ export class IndexStore {
   private options: IndexStoreOptions;
 
   private entries = new Map<string, IndexEntry>();
+  // Notes the last build or a later update could not index. Not persisted: after
+  // a reload only the notes actually in the index are counted.
+  private failedPaths = new Set<string>();
   private progress: IndexProgress = { status: "idle", done: 0, total: 0 };
   private listeners = new Set<ProgressListener>();
   // Set on plugin unload (close()): build/flush/label loops bail out promptly.
@@ -1094,6 +1102,16 @@ export class IndexStore {
   private setProgress(p: Partial<IndexProgress>): void {
     this.progress = { ...this.progress, ...p };
     for (const fn of this.listeners) fn(this.progress);
+  }
+
+  // The settled counts after an incremental change: notes in the index, plus the
+  // ones that could not be indexed.
+  private reportCounts(): void {
+    this.setProgress({
+      done: this.entries.size,
+      total: this.entries.size + this.failedPaths.size,
+      skipped: this.failedPaths.size,
+    });
   }
 
   get count(): number {
@@ -1328,7 +1346,8 @@ export class IndexStore {
     this.labelQueue.clear();
     this.labelDone.clear();
     this.effectiveMaxChunks = undefined;
-    this.setProgress({ status: "idle", done: 0, total: 0, message: undefined });
+    this.failedPaths.clear();
+    this.setProgress({ status: "idle", done: 0, total: 0, skipped: 0, message: undefined });
   }
 
   // Base chunk cap from options. The EFFECTIVE cap (what chunkNote actually uses) is
@@ -1453,7 +1472,8 @@ export class IndexStore {
       this.recomputeCentroid();
       this.labelQueue.clear();
       this.labelDone.clear();
-      this.setProgress({ status: "ready", done: loaded.size, total: loaded.size });
+      this.failedPaths.clear();
+      this.setProgress({ status: "ready", done: loaded.size, total: loaded.size, skipped: 0 });
       return true;
     } catch (e) {
       console.warn("[related-notes] failed to load index, will rebuild", e);
@@ -1885,7 +1905,7 @@ export class IndexStore {
         this.labelQueue.clear();
         this.labelDone.clear();
       }
-      this.setProgress({ status: "building", done: 0, total, message: undefined });
+      this.setProgress({ status: "building", done: 0, total, skipped: 0, message: undefined });
 
       const notice = new Notice("Related notes: indexing…", 0);
       const next = new Map<string, IndexEntry>();
@@ -1984,7 +2004,9 @@ export class IndexStore {
           done = Math.min(files.length, i + batch.length);
           const pct = total > 0 ? Math.round((done / total) * 100) : 100;
           notice.setMessage(`Related notes: indexing… ${pct}% (${done}/${total})`);
-          this.setProgress({ done, total });
+          // Every note looked at so far is either in `next` (reused or embedded)
+          // or could not be indexed.
+          this.setProgress({ done, total, skipped: done - next.size });
           // YIELD a real macrotask so the renderer paints + processes input between
           // batches — a big vault never freezes Obsidian.
           await yieldToUI();
@@ -2018,8 +2040,12 @@ export class IndexStore {
       }
 
       this.entries = next;
+      // Ready reports what is IN the index, with the notes that could not be
+      // indexed counted apart. Counting every note looked at made a build where
+      // 96 of 5,306 notes embedded read as complete.
+      this.failedPaths = new Set(files.filter((f) => !next.has(f.path)).map((f) => f.path));
       this.recomputeCentroid();
-      this.setProgress({ status: "ready", done, total });
+      this.setProgress({ status: "ready", done: next.size, total, skipped: this.failedPaths.size });
       await this.persist();
       await this.flushPending(onProgress);
     } catch (e) {
@@ -2234,6 +2260,7 @@ export class IndexStore {
       this.vectorWriteInFlight = true;
       try {
         this.entries.set(file.path, entry);
+        this.failedPaths.delete(file.path);
         this.summaryCache.delete(file.path);
         // Evict the stale fp32 dequant + label state so ranking/labels recompute.
         this.dequant.delete(file.path);
@@ -2242,11 +2269,16 @@ export class IndexStore {
         // The corpus shifted by one note; refresh the centroid + centered means
         // (also resets the dequant cache so chunks re-center against the new centroid).
         this.recomputeCentroid();
-        this.setProgress({ done: this.entries.size, total: this.entries.size });
+        this.reportCounts();
         await this.persist();
       } finally {
         this.vectorWriteInFlight = false;
       }
+    } else if (!this.closed && !this.entries.has(file.path)) {
+      // Not in the index and it could not be embedded now either. A note that
+      // still has its previous entry stays counted as indexed.
+      this.failedPaths.add(file.path);
+      this.reportCounts();
     }
   }
 
@@ -2257,9 +2289,11 @@ export class IndexStore {
     this.labelQueue.delete(path);
     this.labelDone.delete(path);
     this.ambiguousBasenames = null;
+    // A note is never both skipped and indexed, so at most one of these reports.
+    if (this.failedPaths.delete(path)) this.reportCounts();
     if (this.entries.delete(path)) {
       this.recomputeCentroid();
-      this.setProgress({ done: this.entries.size, total: this.entries.size });
+      this.reportCounts();
       // The entry set just changed but the on-disk blob hasn't yet; hold the
       // vector-write flag across the async persist so a label drain can't slip a
       // mismatched manifest in between (cleared whether persist resolves or throws).
@@ -2278,6 +2312,7 @@ export class IndexStore {
     this.labelDone.delete(oldPath);
     this.ambiguousBasenames = null;
     this.entries.delete(oldPath);
+    this.failedPaths.delete(oldPath);
     void this.updateFile(file);
   }
 
@@ -2295,13 +2330,19 @@ export class IndexStore {
           const entry = await this.embedFile(file, onProgress);
           if (entry) {
             this.entries.set(path, entry);
+            this.failedPaths.delete(path);
             this.summaryCache.delete(path);
             this.dequant.delete(path);
             this.labelQueue.delete(path);
             this.labelDone.delete(path);
+          } else if (!this.entries.has(path)) {
+            this.failedPaths.add(path);
           }
+        } else {
+          this.failedPaths.delete(path);
         }
       }
+      this.reportCounts();
       await this.persist();
     } finally {
       this.vectorWriteInFlight = false;

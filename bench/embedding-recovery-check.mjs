@@ -196,6 +196,8 @@ test("an oversized note falls back to ideas without skipping later batches", asy
   await store.build();
   assert.equal(store.getProgress().status, "ready");
   assert.equal(store.count, notes.length);
+  assert.equal(store.getProgress().done, notes.length);
+  assert.equal(store.getProgress().skipped, 0);
   assert.ok(FakeWorker.instances.length >= 3);
 });
 
@@ -212,7 +214,57 @@ test("failure of every splitting tier still leaves later notes a clean worker", 
   assert.equal(failures, 4); // One failed batch, followed by auto / ideas / windows.
   assert.equal(store.getProgress().status, "ready");
   assert.equal(store.count, 1);
+  // The status reports what is in the index, not every note looked at.
+  assert.equal(store.getProgress().done, 1);
+  assert.equal(store.getProgress().total, 2);
+  assert.equal(store.getProgress().skipped, 1);
   assert.equal(FakeWorker.instances.length, 5);
   assert.ok(FakeWorker.instances.slice(0, -1).every((worker) => worker.terminated));
   assert.equal(FakeWorker.instances.at(-1).terminated, false);
+});
+
+test("the skipped count follows later fixes and deletions", async () => {
+  const engine = makeEngine();
+  const store = makeStore(engine, [
+    ["oversized.md", "中".repeat(12000)],
+    ["normal.md", "Small note."],
+    ["other.md", "Another small note."],
+  ]);
+  let failing = true;
+  FakeWorker.onEmbed = (worker, request) => {
+    if (failing && request.texts.includes("oversized")) {
+      worker.poisoned = true; worker.fail(request);
+    } else worker.succeed(request);
+  };
+  await store.build();
+  const counts = () => { const p = store.getProgress(); return [p.done, p.total, p.skipped]; };
+  assert.deepEqual(counts(), [2, 3, 1]);
+
+  // Fixed by a later edit: it moves from skipped to indexed.
+  failing = false;
+  await store.updateFile(new TFile("oversized.md", 2));
+  assert.deepEqual(counts(), [3, 3, 0]);
+
+  // Failing again while it still has its earlier entry keeps it indexed.
+  failing = true;
+  await store.updateFile(new TFile("oversized.md", 3));
+  assert.deepEqual(counts(), [3, 3, 0]);
+
+  // A deleted note leaves both counts.
+  store.removeFile("oversized.md");
+  assert.deepEqual(counts(), [2, 2, 0]);
+});
+
+test("deleting a skipped note removes it from the count", async () => {
+  const engine = makeEngine();
+  const store = makeStore(engine, [["oversized.md", "中".repeat(12000)], ["normal.md", "Small note."]]);
+  FakeWorker.onEmbed = (worker, request) => {
+    if (request.texts.includes("oversized")) { worker.poisoned = true; worker.fail(request); }
+    else worker.succeed(request);
+  };
+  await store.build();
+  assert.equal(store.getProgress().skipped, 1);
+  store.removeFile("oversized.md");
+  const p = store.getProgress();
+  assert.deepEqual([p.done, p.total, p.skipped], [1, 1, 0]);
 });

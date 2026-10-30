@@ -176,6 +176,7 @@ export class RelatedNotesView extends ItemView {
   private renderStatus(p: IndexProgress): void {
     if (!this.statusEl) return;
     this.statusEl.empty();
+    this.statusEl.removeAttribute("aria-label");
     // A cold-engine search is warming the model up: that hint owns the status
     // line until runSearch clears the flag (progress events must not clobber it).
     if (this.modelWarmup) {
@@ -196,9 +197,18 @@ export class RelatedNotesView extends ItemView {
       this.statusEl.removeClass("rn-status-error");
       return;
     }
+    // Notes that could not be read or embedded are counted apart from the ones
+    // in the index; hovering the line says where they are named.
+    const skipped = p.skipped ? ` · ${p.skipped} skipped` : "";
+    if (p.skipped && (p.status === "building" || p.status === "ready")) {
+      this.statusEl.setAttr(
+        "aria-label",
+        "Skipped notes could not be read or embedded. The developer console (Ctrl+Shift+I or Cmd+Opt+I) names each one.",
+      );
+    }
     if (p.status === "building") {
       const pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
-      this.statusEl.setText(`Indexing… ${pct}% (${p.done}/${p.total})`);
+      this.statusEl.setText(`Indexing… ${pct}% (${p.done}/${p.total})${skipped}`);
       this.statusEl.removeClass("rn-status-error");
     } else if (p.status === "loading") {
       this.statusEl.setText("Loading index…");
@@ -207,7 +217,7 @@ export class RelatedNotesView extends ItemView {
       this.statusEl.setText(p.message ? `Indexing failed: ${p.message}` : "Indexing failed");
       this.statusEl.addClass("rn-status-error");
     } else if (p.status === "ready") {
-      this.statusEl.setText(`${p.done} notes indexed`);
+      this.statusEl.setText(`${p.done} notes indexed${skipped}`);
       this.statusEl.removeClass("rn-status-error");
     } else {
       this.statusEl.setText("");
