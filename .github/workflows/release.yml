@@ -33,6 +33,13 @@ jobs:
       - name: Build plugin
         run: npm run build
 
+      - name: Verify the committed runtime pin matches the installed runtime
+        run: |
+          # src/ort-version.ts is committed (review tools type-check the source
+          # without running gen-ort.mjs). The build above regenerated it from
+          # node_modules; any difference means the pin in git is stale.
+          git diff --exit-code src/ort-version.ts
+
       - name: Verify manifest version matches tag
         env:
           TAG: ${{ github.ref_name }}

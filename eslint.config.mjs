@@ -21,15 +21,13 @@ export default defineConfig([
   },
   {
     // The reader subsystem is desktop-only Node territory by design (the plugin
-    // is isDesktopOnly): node builtins are required lazily at runtime, downloads
-    // stream via fetch because requestUrl buffers whole responses (a 5 GB GGUF
-    // cannot live in RAM), and the engine bundle must be loaded with a REAL
-    // dynamic import() hidden from esbuild's CJS lowering (it has top-level
-    // await; a lowered require() would throw).
+    // is isDesktopOnly): node builtins are required lazily at runtime, and the
+    // engine bundle must be loaded with a REAL dynamic import() hidden from
+    // esbuild's CJS lowering (it has top-level await; a lowered require() would
+    // throw). Downloads use requestUrl like the rest of the plugin.
     files: ["src/reader/*.ts"],
     rules: {
       "@typescript-eslint/no-require-imports": "off",
-      "no-restricted-globals": "off",
       "@typescript-eslint/no-implied-eval": "off",
     },
   },

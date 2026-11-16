@@ -10,7 +10,7 @@
 // Electron's require for node builtins.
 import fsp from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { bundlePath, modelPath, RungSpec } from "./reader-assets";
+import { bundlePath, modelPath, type RungSpec } from "./reader-assets";
 
 interface EngineInstance {
   generate(prompt: string, opts?: { maxTokens?: number }): Promise<string>;

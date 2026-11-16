@@ -3,9 +3,9 @@
 // idle, pauses for typing and indexing, caches everything, and re-reads a
 // note only when its content changes.
 import { TFile } from "obsidian";
-import { assetsReady, autoRung, ensureAssets, RUNGS, RungSpec } from "./reader-assets";
+import { assetsReady, autoRung, ensureAssets, RUNGS, type RungSpec } from "./reader-assets";
 import { ReaderEngine } from "./reader-engine";
-import { detectLanguage, gistTask, NoteContextInput, oneLinerTask, pickTagsTask, TaskResult } from "./reader-tasks";
+import { detectLanguage, gistTask, type NoteContextInput, oneLinerTask, pickTagsTask, type TaskResult } from "./reader-tasks";
 
 export interface ReaderHost {
   // Environment

@@ -16,9 +16,10 @@ import {
   requestUrl,
   debounce,
   getAllTags,
-  setTooltip,
   type Editor,
   type Debouncer,
+  type SettingDefinition,
+  type SettingDefinitionItem,
 } from "obsidian";
 import { ReaderService, type ReaderHost, type ReaderPace } from "./reader/reader-service";
 import { WhatsNewModal, WHATS_NEW_ID } from "./whats-new";
@@ -42,7 +43,7 @@ import {
   type OrtRuntimeBuild,
   type DevicePref,
 } from "./embeddings";
-import { ORT_WEB_CDN, ORT_WEB_VERSION, ORT_RUNTIMES } from "./ort-version";
+import { ORT_WEB_CDN, ORT_WEB_VERSION, ORT_RUNTIMES, type OrtRuntimeFiles } from "./ort-version";
 
 // "Indexing speed" presets → WASM worker-thread count. Light is single-threaded
 // (slowest); Fast uses a capped slice of the cores (fastest). A CPU/speed knob —
@@ -264,16 +265,41 @@ const SNIPPET_CACHE_CAP = 500;
 // main.js/manifest/styles, so the plugin downloads the pair it needs ONCE from a
 // pinned CDN into its own ort/ folder and serves it locally from then on
 // (offline after first run) — only the pair actually used is ever fetched. Any
-// pair — local or just downloaded — is validated against the EXACT byte sizes
-// gen-ort.mjs pinned (ORT_RUNTIMES[build]) before use: the pair must be the same
-// build the bundled transformers glue expects, or ORT init fails with cryptic
-// mixed-build errors. Size mismatch (torn cache write, files from an install
-// carrying a different onnxruntime-web, CDN/proxy garbage) → re-download.
+// pair — local or just downloaded — is validated against the EXACT byte sizes and
+// SHA-256 digests gen-ort.mjs pinned (ORT_RUNTIMES[build]) before use: the pair
+// must be the same build the bundled transformers glue expects, or ORT init fails
+// with cryptic mixed-build errors, and it is executable code, so it must be the
+// exact file npm installed at build time whatever CDN or proxy served it. A
+// mismatch (torn cache write, files from an install carrying a different
+// onnxruntime-web, CDN/proxy garbage, tampering) → re-download.
 // CDN sources tried in order; both serve the pinned npm package.
 const ORT_CDNS = [
   ORT_WEB_CDN,
   `https://unpkg.com/onnxruntime-web@${ORT_WEB_VERSION}/dist/`,
 ];
+
+// Hex SHA-256 of a buffer, with the Web Crypto every Obsidian window has.
+async function sha256Hex(buf: ArrayBuffer): Promise<string> {
+  const digest = await window.crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Why a glue+wasm pair is unusable for this build, or null when it matches the
+// pinned sizes and digests. Sizes first: they are free and catch most damage.
+async function ortPairProblem(
+  glue: ArrayBuffer,
+  wasm: ArrayBuffer,
+  files: OrtRuntimeFiles,
+): Promise<string | null> {
+  if (glue.byteLength !== files.glueBytes || wasm.byteLength !== files.wasmBytes) {
+    return `unexpected sizes (glue ${glue.byteLength}/${files.glueBytes} B, wasm ${wasm.byteLength}/${files.wasmBytes} B)`;
+  }
+  const [glueSha, wasmSha] = await Promise.all([sha256Hex(glue), sha256Hex(wasm)]);
+  if (glueSha !== files.glueSha256 || wasmSha !== files.wasmSha256) {
+    return "content does not match the pinned SHA-256 digests";
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 
@@ -672,24 +698,22 @@ export default class RelatedNotesPlugin extends Plugin {
     const gluePath = normalizePath(`${dir}/${files.glue}`);
     const wasmPath = normalizePath(`${dir}/${files.wasm}`);
 
-    // 1) Local pair, size-validated against the pinned build.
+    // 1) Local pair, validated against the pinned build.
     try {
       if ((await adapter.exists(gluePath)) && (await adapter.exists(wasmPath))) {
         const [glueBuf, wasmBinary] = await Promise.all([
           adapter.readBinary(gluePath),
           adapter.readBinary(wasmPath),
         ]);
-        if (
-          glueBuf.byteLength === files.glueBytes &&
-          wasmBinary.byteLength === files.wasmBytes
-        ) {
+        const problem = await ortPairProblem(glueBuf, wasmBinary, files);
+        if (problem === null) {
           return { glueText: new TextDecoder().decode(glueBuf), wasmBinary };
         }
-        // Wrong sizes: a torn/interrupted cache write, or files from an install
-        // carrying a different onnxruntime-web build — unusable with the glue
-        // bundled into THIS version. Fall through and replace them.
+        // A torn/interrupted cache write, files from an install carrying a
+        // different onnxruntime-web build, or altered files: unusable with the
+        // glue bundled into THIS version. Fall through and replace them.
         console.warn(
-          `[related-notes] local ORT ${build} runtime does not match the bundled build (glue ${glueBuf.byteLength}/${files.glueBytes} B, wasm ${wasmBinary.byteLength}/${files.wasmBytes} B); re-downloading`,
+          `[related-notes] local ORT ${build} runtime does not match the bundled build (${problem}); re-downloading`,
         );
       }
     } catch (e) {
@@ -707,14 +731,11 @@ export default class RelatedNotesPlugin extends Plugin {
         const glueBinary = glue.arrayBuffer;
         const wasmBinary = wasm.arrayBuffer;
         // Validate BEFORE caching or serving: a proxy/captive-portal can return
-        // 200 with garbage, which must not poison the cache or reach the worker.
-        if (
-          glueBinary.byteLength !== files.glueBytes ||
-          wasmBinary.byteLength !== files.wasmBytes
-        ) {
-          failures.push(
-            `${base}: unexpected sizes (glue ${glueBinary.byteLength}/${files.glueBytes} B, wasm ${wasmBinary.byteLength}/${files.wasmBytes} B)`,
-          );
+        // 200 with garbage, and nothing but the pinned build may reach the worker
+        // or the cache.
+        const problem = await ortPairProblem(glueBinary, wasmBinary, files);
+        if (problem !== null) {
+          failures.push(`${base}: ${problem}`);
           continue;
         }
         const glueText = new TextDecoder().decode(glueBinary);
@@ -1376,14 +1397,81 @@ export default class RelatedNotesPlugin extends Plugin {
   }
 }
 
+// Settings keys a control can bind to. The definitions are typed on these, so a
+// renamed setting breaks the build instead of rendering an empty control.
+type SettingKey = Extract<keyof RelatedNotesSettings, string>;
+
+// Continuous controls (sliders, text areas) save after a short pause instead of
+// on every step: several of them rebuild the index when they change.
+const SAVE_LATER_KEYS = new Set<string>([
+  "topK",
+  "minSimilarity",
+  "newNoteMinSimilarity",
+  "ideaInfluence",
+  "graphInfluence",
+  "structureInfluence",
+  "maxChunks",
+  "shortlistSize",
+  "excludeFolders",
+  "excludeFoldersLinks",
+  "isolatedAreas",
+]);
+// Applied to the running reader at once, on every change.
+const READER_KEYS = new Set<string>([
+  "readerEnabled",
+  "readerRung",
+  "readerPace",
+  "readerOneLiners",
+  "readerSuggestTags",
+]);
+// Change what a card shows: the panel re-renders at once.
+const PANEL_KEYS = new Set<string>([
+  "showFolder",
+  "showTagPills",
+  "showWhyPills",
+  "linkedFirst",
+  "readerOneLiners",
+  "readerSuggestTags",
+]);
+// Folder lists that change which mentions may become links.
+const TITLE_INDEX_KEYS = new Set<string>(["excludeFolders", "excludeFoldersLinks"]);
+// Shown in a sub-page's summary line, which only update() refreshes. The text
+// areas feeding the Scope summary refresh when the pane closes instead, so
+// typing never loses focus to a rebuild.
+const SUMMARY_KEYS = new Set<string>(["readerEnabled", "readerRung", "glowEnabled", "device"]);
+
+// 30 s is the aggressive floor, not "instant": a respawn costs ~2-5 s of
+// background CPU and note edits are 20 s-debounced, so anything shorter would
+// tear the engine down BETWEEN consecutive edits and label batches and respawn
+// it seconds later, which is more churn than the memory is worth.
+const IDLE_UNLOAD_OPTIONS: Record<string, string> = {
+  "0": "Never",
+  "0.5": "Right after use (30 seconds)",
+  "1": "After 1 minute",
+  "5": "After 5 minutes",
+  "15": "After 15 minutes (recommended)",
+  "60": "After 1 hour",
+};
+
+const DEVICE_OPTIONS: Record<DevicePref, string> = {
+  auto: "Auto · WASM/CPU (recommended)",
+  webgpu: "WebGPU/GPU (faster, but can spike memory)",
+  wasm: "WASM/CPU",
+};
+
+// Entries of a comma- or newline-separated setting, for the page summaries.
+function listCount(value: string): number {
+  return value.split(/[\n,]/).filter((v) => v.trim().length > 0).length;
+}
+
 export class RelatedNotesSettingTab extends PluginSettingTab {
   plugin: RelatedNotesPlugin;
   private readonly debouncedSave: Debouncer<[], void>;
-  // Which collapsible sections are expanded. Setup is the only one open on a
-  // fresh tab; the rest are opt-in, which is what keeps the page short. Held on
-  // the instance (the tab is registered once) so re-rendering after a profile
-  // apply or a model change preserves what the user opened.
-  private readonly openSections = new Set<string>(["setup"]);
+  // The reader's status row while it is on screen, and whether the engine
+  // error was present at the last status update (a change rebuilds the tab,
+  // so the error row and the page's warning mark follow it).
+  private readerStatusEl: HTMLElement | null = null;
+  private readerErrorShown = false;
 
   constructor(app: App, plugin: RelatedNotesPlugin) {
     super(app, plugin);
@@ -1391,675 +1479,402 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     this.debouncedSave = debounce(() => void this.plugin.saveSettings(), 500, false);
   }
 
-  // Apply a one-click preset, persist (the index rebuilds if the model changed),
-  // then re-render so every control reflects the new values.
-  private async applyProfile(name: ProfileName): Promise<void> {
+  // Obsidian renders the tab, its sub-pages and the settings search from this
+  // list. Nothing here reads files or the network: rows that need to do that
+  // work in their render callback.
+  getSettingDefinitions(): SettingDefinitionItem<SettingKey>[] {
+    return [
+      {
+        name: "Pick a model to start",
+        desc: "Indexing is paused until you choose a model under Setup.",
+        visible: () => !this.plugin.settings.modelChosen,
+        searchable: false,
+      },
+      { type: "group", heading: "Setup", items: this.setupItems() },
+      { type: "group", heading: "Results panel", items: this.resultsItems() },
+      {
+        type: "group",
+        heading: "More",
+        items: [
+          {
+            type: "page",
+            name: "Reader",
+            desc: "A small local model reads your notes while Obsidian is idle, so the panel can label and judge connections. Notes never leave this machine.",
+            displayValue: () => this.readerSummary(),
+            status: () => (this.plugin.reader?.engineError() ? "warning" : null),
+            items: this.readerItems(),
+          },
+          {
+            type: "page",
+            name: "Linking",
+            desc: "Glowing mentions you can turn into links, and smarter [[ suggestions.",
+            displayValue: () => (this.plugin.settings.glowEnabled ? "Highlights on" : "Highlights off"),
+            items: this.linkingItems(),
+          },
+          {
+            type: "page",
+            name: "Scope",
+            desc: "Folders the plugin leaves out, and tag areas it keeps apart.",
+            displayValue: () => this.scopeSummary(),
+            items: this.scopeItems(),
+          },
+          {
+            type: "page",
+            name: "Engine",
+            desc: "Where the embedding model runs, and the models stored on this device.",
+            displayValue: () => DEVICE_OPTIONS[this.plugin.settings.device] ?? this.plugin.settings.device,
+            items: this.engineItems(),
+          },
+          {
+            type: "page",
+            name: "Advanced matching",
+            desc: "Ranking settings most vaults never need.",
+            items: this.advancedItems(),
+          },
+          {
+            name: "Show what's new after updates",
+            desc: "A one-time popup with the highlights of a feature release. Never shown twice, never for small fixes.",
+            control: { type: "toggle", key: "showWhatsNew" },
+          },
+        ],
+      },
+    ];
+  }
+
+  getControlValue(key: string): unknown {
+    const value = (this.plugin.settings as unknown as Record<string, unknown>)[key];
+    // The idle-unload dropdown works with strings; the setting is in minutes.
+    return key === "idleUnloadMinutes" ? String(value) : value;
+  }
+
+  // Every control change ends here. saveSettings() applies the change (and
+  // rebuilds the index when the model or the embedding shape changed), so it is
+  // started, not awaited: a rebuild can take minutes and the control must not
+  // wait for it. Sliders and text areas save after a pause.
+  setControlValue(key: string, value: unknown): Promise<void> {
+    if (key === "modelId") {
+      this.chooseModel(String(value));
+      return Promise.resolve();
+    }
+    const settings = this.plugin.settings as unknown as Record<string, unknown>;
+    settings[key] = key === "idleUnloadMinutes" ? Number(value) || 0 : value;
+    // An explicit choice: the easy-links-aware default never overrides it again.
+    if (key === "suggesterTakeOver") this.plugin.settings.suggesterTakeOverUserSet = true;
+    if (key === "pinPersist" && value === false) this.plugin.settings.pinnedPath = "";
+    if (TITLE_INDEX_KEYS.has(key)) this.plugin.titleIndex.markDirty();
+
+    if (SAVE_LATER_KEYS.has(key) || READER_KEYS.has(key)) this.debouncedSave();
+    else void this.plugin.saveSettings();
+
+    if (READER_KEYS.has(key)) this.plugin.applyReaderSettings();
+    if (PANEL_KEYS.has(key)) this.plugin.requestPanelRender();
+    // With persistence on, the next panel render stores a pin that is set now.
+    if (key === "pinPersist") this.plugin.getView()?.requestRender();
+
+    if (SUMMARY_KEYS.has(key)) this.update();
+    else this.refreshDomState();
+    return Promise.resolve();
+  }
+
+  // Picking a model satisfies the first-run gate. saveSettings() rebuilds when
+  // the model changes; when it did not (a gated user picking the default), the
+  // first build starts here.
+  private chooseModel(id: string): void {
+    const firstChoice = !this.plugin.settings.modelChosen;
+    const modelChanged = this.plugin.settings.modelId !== id;
+    this.plugin.settings.modelId = id;
+    this.plugin.settings.modelChosen = true;
+    if (firstChoice) this.update();
+    void this.plugin.saveSettings().then(() => {
+      if (firstChoice && !modelChanged) return this.plugin.rebuildIndex();
+    });
+  }
+
+  // Apply a one-click preset, persist it (the index rebuilds if the model
+  // changed), and show the new values.
+  private applyProfile(name: ProfileName): void {
     Object.assign(this.plugin.settings, PROFILES[name]);
-    await this.plugin.saveSettings();
-    this.render();
+    void this.plugin.saveSettings();
+    this.update();
     new Notice(
       `Related notes: applied the ${name === "best" ? "Best quality" : "Balanced"} profile.`,
     );
   }
 
-  display(): void {
-    this.render();
+  // The model list, plus a custom id the list does not carry.
+  private modelOptions(): Record<string, string> {
+    const options = { ...MODEL_OPTIONS };
+    const id = this.plugin.settings.modelId;
+    if (!(id in options)) options[id] = `${id} (custom)`;
+    return options;
   }
 
-  // The tab body, callable directly (e.g. after applying a profile) without the
-  // deprecated display() entry point.
-  // Model cache manager: list the models transformers.js has downloaded into the
-  // browser Cache ("transformers-cache"), with a Remove button to free space after
-  // switching. Async-populates `host` (re-render after a removal).
-  private renderModelCache(host: HTMLElement): void {
-    host.empty();
-    void (async () => {
-      let ids: string[];
-      try {
-        const cache = await caches.open("transformers-cache");
-        const keys = await cache.keys();
-        const set = new Set<string>();
-        for (const req of keys) {
-          const m = /huggingface\.co\/([^/]+\/[^/]+)\/resolve\//.exec(req.url);
-          if (m) set.add(m[1]);
-        }
-        ids = [...set].sort();
-      } catch {
-        host.createDiv({
-          cls: "setting-item-description",
-          text: "Could not read the model cache.",
-        });
-        return;
-      }
-      if (ids.length === 0) {
-        host.createDiv({
-          cls: "setting-item-description",
-          text: "No models downloaded yet.",
-        });
-        return;
-      }
-      for (const id of ids) {
-        const inUse = this.plugin.settings.modelId === id;
-        new Setting(host).setName(inUse ? `${id}  (in use)` : id).addButton((b) =>
-          b
-            .setButtonText("Remove")
-            .setClass("mod-warning")
-            .onClick(async () => {
-              try {
-                const cache = await caches.open("transformers-cache");
-                for (const req of await cache.keys()) {
-                  if (req.url.includes(`/${id}/`)) await cache.delete(req);
-                }
-                new Notice(`Removed cached model: ${id}`);
-              } catch {
-                new Notice("Could not remove the cached model.");
-              }
-              this.renderModelCache(host);
-            }),
-        );
-      }
-    })();
-  }
-
-  // One collapsible group. Everything but Setup starts closed, so the tab opens
-  // as a short list of headings instead of a 31-row scroll. The open set lives on
-  // the tab instance, so a re-render (applying a profile, picking a model) never
-  // collapses a section the user just opened.
-  //
-  // <details>/<summary> rather than setHeading(): a heading cannot collapse, and
-  // eslint-plugin-obsidianmd forbids hand-built <h*> elements in a settings tab.
-  // Every row stays in the DOM either way, so Obsidian's settings search can still
-  // reach a collapsed setting.
-  private section(
-    title: string,
-    key: string,
-    build: (body: HTMLElement) => void,
-    hint?: string,
-  ): void {
-    const details = this.containerEl.createEl("details", { cls: "rn-sec" });
-    details.open = this.openSections.has(key);
-    const summary = details.createEl("summary", { cls: "rn-sec-summary" });
-    summary.createSpan({ cls: "rn-sec-title", text: title });
-    const meta = summary.createSpan({ cls: "rn-sec-meta" });
-    const body = details.createDiv({ cls: "rn-sec-body" });
-    build(body);
-    // Counted from what was actually built, so the summary can never drift from
-    // the contents. Rows added asynchronously (the model cache) are covered by
-    // `hint` instead.
-    const n = body.querySelectorAll(".setting-item").length;
-    meta.setText(hint ? `${n} settings · ${hint}` : `${n} settings`);
-    details.addEventListener("toggle", () => {
-      if (details.open) this.openSections.add(key);
-      else this.openSections.delete(key);
-    });
-  }
-
-  // A slider row with a live value readout, the shape used by every numeric
-  // setting here. `fmt` renders the readout; onChange is debounced-saved.
-  private slider(
-    host: HTMLElement,
-    name: string,
-    desc: string,
-    opts: { min: number; max: number; step: number; value: number; def?: number },
-    apply: (v: number) => void,
-  ): void {
-    // No custom value readout: the slider's own display carries the value.
-    // A second readout doubled it (until 4.0.4).
-    const setting = new Setting(host)
-      .setName(name)
-      .setDesc(desc)
-      .addSlider((s) =>
-        s
-          .setLimits(opts.min, opts.max, opts.step)
-          .setValue(opts.value)
-          .onChange((v) => {
-            apply(v);
-            this.debouncedSave();
-          }),
-      );
-    if (opts.def !== undefined) {
-      setTooltip(setting.infoEl, `Default: ${opts.def}. Range ${opts.min} to ${opts.max}.`);
-    }
-  }
-
-  // A toggle row that persists immediately.
-  private toggle(
-    host: HTMLElement,
-    name: string,
-    desc: string,
-    value: boolean,
-    apply: (v: boolean) => void,
-    def?: boolean,
-  ): void {
-    const setting = new Setting(host)
-      .setName(name)
-      .setDesc(desc)
-      .addToggle((t) =>
-        t.setValue(value).onChange(async (v) => {
-          apply(v);
-          await this.plugin.saveSettings();
-        }),
-      );
-    if (def !== undefined) setTooltip(setting.infoEl, `Default: ${def ? "on" : "off"}`);
-  }
-
-  // A multi-line folder/namespace list that marks the title index dirty when the
-  // value affects link matching.
-  private folderList(
-    host: HTMLElement,
-    name: string,
-    desc: string,
-    placeholder: string,
-    value: string,
-    apply: (v: string) => void,
-    dirtiesTitleIndex = false,
-  ): void {
-    new Setting(host)
-      .setName(name)
-      .setDesc(desc)
-      .addTextArea((t) =>
-        t
-          .setPlaceholder(placeholder)
-          .setValue(value)
-          .onChange((v) => {
-            apply(v);
-            if (dirtiesTitleIndex) this.plugin.titleIndex.markDirty();
-            this.debouncedSave();
-          }),
-      );
-  }
-
-  private render(): void {
-    const { containerEl } = this;
-    containerEl.empty();
-
-    const intro = containerEl.createDiv({
-      cls: "setting-item-description rn-settings-intro",
-    });
-    intro.createEl("strong", { text: "Smart Related Notes" });
-    intro.appendText(
-      " ranks your vault by meaning, with a model that runs entirely on this machine. " +
-        "Offline; nothing leaves your vault." +
-        (this.plugin.settings.modelChosen ? "" : " Pick a model in Setup to start indexing."),
-    );
-    if (!this.plugin.settings.modelChosen) {
-      containerEl.createDiv({
-        cls: "setting-item-description rn-settings-gate",
-        text: "No model chosen yet. Indexing is paused until you pick one in Setup.",
-      });
-    }
-
-    this.section("Setup", "setup", (b) => this.buildSetup(b));
-    this.section("Results panel", "results", (b) => this.buildResults(b));
-    this.section("Reader", "reader", (b) => this.readerSection(b), "summaries tags model");
-    this.section("Linking", "linking", (b) => this.buildLinking(b));
-    this.section("Scope", "scope", (b) => this.buildScope(b));
-    this.section("Engine", "engine", (b) => this.buildEngine(b), "cached models");
-    this.section("Advanced matching", "advanced", (b) => this.buildAdvanced(b));
-  }
-
-  // --- Setup: the only section most people ever open -------------------------
-  private buildSetup(host: HTMLElement): void {
-    new Setting(host)
-      .setName("Performance profile")
-      .setDesc("Balanced is fast and light. Best quality is slower and stronger.")
-      .addButton((b) =>
-        b.setButtonText("Balanced").onClick(() => void this.applyProfile("balanced")),
-      )
-      .addButton((b) =>
-        b.setButtonText("Best quality").onClick(() => void this.applyProfile("best")),
-      );
-
-    const modelSetting = new Setting(host)
-      .setName("Model")
-      .setDesc(
-        "MiniLM is the fast default. jina-v5-nano is the strongest here (a ~250 MB, non-commercial download). Changing this re-embeds the vault.",
-      );
-    setTooltip(modelSetting.infoEl, "Default: MiniLM (default, fast)");
-    modelSetting.addDropdown((d) => {
-        for (const [id, label] of Object.entries(MODEL_OPTIONS)) d.addOption(id, label);
-        // Allow a custom id the dropdown doesn't list.
-        if (!(this.plugin.settings.modelId in MODEL_OPTIONS)) {
-          d.addOption(this.plugin.settings.modelId, `${this.plugin.settings.modelId} (custom)`);
-        }
-        d.setValue(this.plugin.settings.modelId).onChange(async (v) => {
-          // Picking a model satisfies the first-run gate. saveSettings rebuilds when the
-          // model id changes; if it didn't change (a gated user re-picking the default),
-          // kick off the initial build here.
-          const firstChoice = !this.plugin.settings.modelChosen;
-          const modelChanged = this.plugin.settings.modelId !== v;
-          this.plugin.settings.modelId = v;
-          this.plugin.settings.modelChosen = true;
-          await this.plugin.saveSettings();
-          if (firstChoice && !modelChanged) await this.plugin.rebuildIndex();
-        });
-      });
-
+  private indexDescription(): string {
     const progress = this.plugin.store.getProgress();
-    new Setting(host)
-      .setName("Index")
-      .setDesc(
-        progress.status === "building"
-          ? `Indexing… ${progress.done}/${progress.total}`
-          : progress.skipped
-            ? `${this.plugin.store.count} notes embedded, ${progress.skipped} skipped. The developer console names each skipped note.`
-            : `${this.plugin.store.count} notes embedded.`,
-      )
-      .addButton((b) =>
-        b
-          .setButtonText("Rebuild index")
-          .setCta()
-          .onClick(() => {
-            void this.plugin.rebuildIndex();
-          }),
-      );
+    if (progress.status === "building") return `Indexing… ${progress.done}/${progress.total}`;
+    const count = this.plugin.store.count;
+    return progress.skipped
+      ? `${count} notes embedded, ${progress.skipped} skipped. The developer console names each skipped note.`
+      : `${count} notes embedded.`;
+  }
 
-    this.toggle(
-      host,
-      "Show what's new after updates",
-      "A one-time popup with the highlights of a feature release. Never shown twice, never for small fixes.",
-      this.plugin.settings.showWhatsNew,
-      (v) => (this.plugin.settings.showWhatsNew = v),
-      true,
-    );
+  private readerSummary(): string {
+    if (!this.plugin.settings.readerEnabled) return "Off";
+    const rung = this.plugin.settings.readerRung;
+    return rung === "auto" ? "On" : `On · ${RUNGS.find((r) => r.id === rung)?.label ?? rung}`;
+  }
+
+  private scopeSummary(): string {
+    const folders = listCount(this.plugin.settings.excludeFolders);
+    const areas = listCount(this.plugin.settings.isolatedAreas);
+    const parts = [
+      folders > 0 ? `${folders} folder${folders === 1 ? "" : "s"} left out` : "",
+      areas > 0 ? `${areas} isolated area${areas === 1 ? "" : "s"}` : "",
+    ].filter(Boolean);
+    return parts.length > 0 ? parts.join(" · ") : "Whole vault";
+  }
+
+  // --- Setup -----------------------------------------------------------------
+  private setupItems(): SettingDefinition<SettingKey>[] {
+    return [
+      {
+        name: "Model",
+        desc: "MiniLM is the fast default. jina-v5-nano is the strongest here (a ~250 MB, non-commercial download). Changing this re-embeds the vault.",
+        aliases: ["embedding model", "MiniLM", "mpnet", "e5", "jina"],
+        control: { type: "dropdown", key: "modelId", options: this.modelOptions() },
+      },
+      {
+        name: "Index",
+        desc: this.indexDescription(),
+        aliases: ["rebuild", "reindex", "embedded notes"],
+        render: (setting) => {
+          setting.setDesc(this.indexDescription());
+          setting.addButton((b) =>
+            b
+              .setButtonText("Rebuild index")
+              .setCta()
+              .onClick(() => {
+                void this.plugin.rebuildIndex();
+              }),
+          );
+        },
+      },
+      {
+        name: "Performance profile",
+        desc: "Balanced is fast and light. Best quality is slower and stronger.",
+        aliases: ["preset", "quality"],
+        render: (setting) => {
+          setting
+            .addButton((b) => b.setButtonText("Balanced").onClick(() => this.applyProfile("balanced")))
+            .addButton((b) => b.setButtonText("Best quality").onClick(() => this.applyProfile("best")));
+        },
+      },
+    ];
   }
 
   // --- Results panel: what the card stack shows ------------------------------
-  private buildResults(host: HTMLElement): void {
-    this.slider(
-      host,
-      "Number of results",
-      "How many related notes the card stack shows.",
-      { min: 4, max: 30, step: 1, value: this.plugin.settings.topK, def: 12 },
-      (v) => (this.plugin.settings.topK = v),
-    );
-
-    this.slider(
-      host,
-      "Minimum similarity",
-      "Hide notes scoring below this. Around 0.20 separates on-topic from unrelated.",
+  private resultsItems(): SettingDefinition<SettingKey>[] {
+    return [
       {
-        min: 0,
-        max: 0.9,
-        step: 0.05,
-        value: this.plugin.settings.minSimilarity, def: 0.2,
+        name: "Number of results",
+        desc: "How many related notes the card stack shows.",
+        control: { type: "slider", key: "topK", min: 4, max: 30, step: 1 },
       },
-      (v) => (this.plugin.settings.minSimilarity = v),
-    );
-
-    this.toggle(
-      host,
-      "Show summary line",
-      "Show a short topic label on each card, extracted locally. Rebuilds the index.",
-      this.plugin.settings.showSummary,
-      (v) => (this.plugin.settings.showSummary = v),
-      true,
-    );
-
-    this.toggle(
-      host,
-      "Show snippet",
-      "Show a one- to two-line preview. Used when the summary line is off.",
-      this.plugin.settings.showSnippet,
-      (v) => (this.plugin.settings.showSnippet = v),
-      true,
-    );
-
-    this.toggle(
-      host,
-      "Show folder on cards",
-      "The note's folder, right-aligned on the pills row.",
-      this.plugin.settings.showFolder,
-      (v) => {
-        this.plugin.settings.showFolder = v;
-        this.plugin.requestPanelRender();
-      },
-      true,
-    );
-
-    this.toggle(
-      host,
-      "Show tag pills",
-      "The shared-tag pill on cards, e.g. #personal.",
-      this.plugin.settings.showTagPills,
-      (v) => {
-        this.plugin.settings.showTagPills = v;
-        this.plugin.requestPanelRender();
-      },
-      true,
-    );
-
-    this.toggle(
-      host,
-      "Show why-related pills",
-      "The other reason pills on cards: co-cited, similar text, or the note that bridges two others. The Linked and Related chips stay either way.",
-      this.plugin.settings.showWhyPills,
-      (v) => {
-        this.plugin.settings.showWhyPills = v;
-        this.plugin.requestPanelRender();
-      },
-      true,
-    );
-
-    this.toggle(
-      host,
-      "Open cards in a new tab",
-      "Where a plain click on a card opens the note. Cmd/ctrl click does the opposite of this setting; middle click always opens a new tab, and right click offers all choices.",
-      this.plugin.settings.openInNewTab,
-      (v) => (this.plugin.settings.openInNewTab = v),
-      false,
-    );
-
-    this.toggle(
-      host,
-      "Put linked notes on top",
-      "Cards you already link to or from sort above everything else; order inside each group is unchanged.",
-      this.plugin.settings.linkedFirst,
-      (v) => {
-        this.plugin.settings.linkedFirst = v;
-        this.plugin.requestPanelRender();
-      },
-      false,
-    );
-
-    this.toggle(
-      host,
-      "Show last-edited time",
-      "Add a muted “edited Nd ago” line to each card.",
-      this.plugin.settings.showRecency,
-      (v) => (this.plugin.settings.showRecency = v),
-      false,
-    );
-
-    this.toggle(
-      host,
-      "Remember the pin across restarts",
-      "Keep the panel's pinned note when Obsidian restarts. Off: the pin clears on startup.",
-      this.plugin.settings.pinPersist,
-      (v) => {
-        this.plugin.settings.pinPersist = v;
-        if (!v) this.plugin.settings.pinnedPath = "";
-        // If a pin is currently set, the next render stores it (anchorFile sync).
-        this.plugin.getView()?.requestRender();
-      },
-      false,
-    );
-  }
-
-  // --- Linking: glow + the [[ suggester --------------------------------------
-  private buildLinking(host: HTMLElement): void {
-    this.toggle(
-      host,
-      "Highlight linkable mentions",
-      "Glow the first mention of a concept that already has a note. Click the glow to make it a [[wikilink]].",
-      this.plugin.settings.glowEnabled,
-      (v) => (this.plugin.settings.glowEnabled = v),
-      true,
-    );
-
-    this.toggle(
-      host,
-      "Highlight in live preview only",
-      "Skip the glow in raw source mode.",
-      this.plugin.settings.glowRestrictToLivePreview,
-      (v) => (this.plugin.settings.glowRestrictToLivePreview = v),
-      true,
-    );
-
-    this.toggle(
-      host,
-      "Highlight ambiguous mentions",
-      "Also glow a phrase owned by more than one note. Off for precision.",
-      this.plugin.settings.glowAmbiguous,
-      (v) => (this.plugin.settings.glowAmbiguous = v),
-      false,
-    );
-
-    this.toggle(
-      host,
-      "Auto-link later mentions",
-      "Once a note is linked here, link its remaining mentions in this note while you're idle.",
-      this.plugin.settings.autoLinkSubsequent,
-      (v) => (this.plugin.settings.autoLinkSubsequent = v),
-      false,
-    );
-
-    this.toggle(
-      host,
-      "Smart [[ suggestions",
-      "Rank [[ completions by meaning, not just by name.",
-      this.plugin.settings.suggesterEnabled,
-      (v) => (this.plugin.settings.suggesterEnabled = v),
-      true,
-    );
-
-    new Setting(host)
-      .setName("Take over the [[ popup")
-      .setDesc(
-        "Put these suggestions at the top of the popup. Off while the Easy Links suggester is active, so the two don't fight.",
-      )
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.suggesterTakeOver).onChange(async (v) => {
-          this.plugin.settings.suggesterTakeOver = v;
-          // Mark the value as an explicit user choice so the easy-links-aware
-          // auto-default never re-derives (and silently overrides) it again.
-          this.plugin.settings.suggesterTakeOverUserSet = true;
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    this.toggle(
-      host,
-      "Suggest new notes",
-      "Offer to create a note for a strongly-relevant concept that doesn't have one yet.",
-      this.plugin.settings.suggestNewNotes,
-      (v) => (this.plugin.settings.suggestNewNotes = v),
-      true,
-    );
-
-    this.slider(
-      host,
-      "New-note confidence",
-      "How relevant a concept must be before a “create new note” row is offered.",
       {
-        min: 0,
-        max: 0.9,
-        step: 0.05,
-        value: this.plugin.settings.newNoteMinSimilarity, def: 0.45,
+        name: "Minimum similarity",
+        desc: "Hide notes scoring below this. Around 0.20 separates on-topic from unrelated.",
+        aliases: ["threshold", "cutoff"],
+        control: {
+          type: "slider",
+          key: "minSimilarity",
+          min: 0,
+          max: 0.9,
+          step: 0.05,
+          displayFormat: (v) => v.toFixed(2),
+        },
       },
-      (v) => (this.plugin.settings.newNoteMinSimilarity = v),
-    );
-  }
-
-  // --- Scope: which notes take part ------------------------------------------
-  private buildScope(host: HTMLElement): void {
-    this.folderList(
-      host,
-      "Excluded folders",
-      "Folders left out of the index entirely. One per line; includes everything beneath.",
-      "Templates\nArchive/2023",
-      this.plugin.settings.excludeFolders,
-      (v) => (this.plugin.settings.excludeFolders = v),
-      true,
-    );
-
-    this.folderList(
-      host,
-      "Folders excluded from link suggestions",
-      "Still indexed and ranked, but never suggested as inline [[links]]. One per line.",
-      "Daily\nAttachments/templates",
-      this.plugin.settings.excludeFoldersLinks,
-      (v) => (this.plugin.settings.excludeFoldersLinks = v),
-      true,
-    );
-
-    this.folderList(
-      host,
-      "Isolated areas (tag namespaces)",
-      "One tag namespace per line. Notes in an area only relate to each other, and never appear elsewhere.",
-      "goa",
-      this.plugin.settings.isolatedAreas,
-      (v) => (this.plugin.settings.isolatedAreas = v),
-    );
-  }
-
-  // --- Engine: how and where the model runs ----------------------------------
-  private buildEngine(host: HTMLElement): void {
-    new Setting(host)
-      .setName("Compute device")
-      .setDesc(
-        "Auto runs on the CPU and is memory-stable. WebGPU is faster per reindex but can grow memory until Obsidian crashes.",
-      )
-      .addDropdown((d) =>
-        d
-          .addOption("auto", "Auto · WASM/CPU (recommended)")
-          .addOption("webgpu", "WebGPU/GPU (faster, but can spike memory)")
-          .addOption("wasm", "WASM/CPU")
-          .setValue(this.plugin.settings.device)
-          .onChange(async (v) => {
-            this.plugin.settings.device = v as DevicePref;
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(host)
-      .setName("Indexing speed")
-      .setDesc(
-        "CPU threads used while indexing. Ignored by jina-v5-nano, which is faster on one. Changing this rebuilds the index.",
-      )
-      .addDropdown((d) =>
-        d
-          .addOption("light", "Light · 1 thread (slowest)")
-          .addOption("balanced", "Balanced (recommended)")
-          .addOption("fast", "Fast · all cores")
-          .setValue(this.plugin.settings.indexSpeed)
-          .onChange(async (v) => {
-            this.plugin.settings.indexSpeed = v as IndexSpeed;
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(host)
-      .setName("Unload model when idle")
-      .setDesc(
-        "Free the model's memory after this long unused. It reloads in a few seconds, with no re-download.",
-      )
-      .addDropdown((d) => {
-        // 30s is the aggressive floor, not "instant": a respawn costs ~2-5s of
-        // background CPU and note edits are 20s-debounced, so anything shorter
-        // would tear the engine down BETWEEN consecutive edits/label batches
-        // and respawn it seconds later — more churn than the RAM is worth.
-        d.addOption("0", "Never")
-          .addOption("0.5", "Right after use (30 seconds)")
-          .addOption("1", "After 1 minute")
-          .addOption("5", "After 5 minutes")
-          .addOption("15", "After 15 minutes (recommended)")
-          .addOption("60", "After 1 hour");
-        // Honour a hand-edited data.json value the list doesn't carry (mirrors
-        // the model dropdown) — otherwise the control would DISPLAY "Never"
-        // while the real timeout stays active.
-        const cur = String(this.plugin.settings.idleUnloadMinutes);
-        if (!["0", "0.5", "1", "5", "15", "60"].includes(cur)) {
-          d.addOption(cur, `After ${cur} minutes (custom)`);
-        }
-        d.setValue(cur).onChange(async (v) => {
-          this.plugin.settings.idleUnloadMinutes = Number(v) || 0;
-          await this.plugin.saveSettings();
-        });
-      });
-
-    host.createDiv({
-      cls: "setting-item-description rn-sec-note",
-      text: "Models cached on this device. Remove one to free disk space after switching.",
-    });
-    this.renderModelCache(host.createDiv());
-  }
-
-  // --- Advanced matching: knobs most vaults never need -----------------------
-  private buildAdvanced(host: HTMLElement): void {
-    this.slider(
-      host,
-      "Idea influence",
-      "How much whole-idea overlap counts against a single matching passage. Re-ranks live, no re-index.",
       {
-        min: 0,
-        max: 0.6,
-        step: 0.05,
-        value: this.plugin.settings.ideaInfluence, def: 0.3,
+        name: "Show summary line",
+        desc: "Show a short topic label on each card, extracted locally. Rebuilds the index.",
+        control: { type: "toggle", key: "showSummary" },
       },
-      (v) => (this.plugin.settings.ideaInfluence = v),
-    );
-
-    this.slider(
-      host,
-      "Link-graph influence",
-      "Also rank by how your links connect notes, not just by what they say. Surfaces related notes the wording alone would miss. 0 disables it.",
       {
-        min: 0,
-        max: 1,
-        step: 0.1,
-        value: this.plugin.settings.graphInfluence, def: 1,
+        name: "Show snippet",
+        desc: "Show a one- to two-line preview. Used when the summary line is off.",
+        control: {
+          type: "toggle",
+          key: "showSnippet",
+          disabled: () => this.plugin.settings.showSummary,
+        },
       },
-      (v) => (this.plugin.settings.graphInfluence = v),
-    );
-
-    this.slider(
-      host,
-      "Structure influence",
-      "How much shared tags, links, and frontmatter nudge near-ties. 0 disables it.",
       {
-        min: 0,
-        max: 0.3,
-        step: 0.01,
-        value: this.plugin.settings.structureInfluence, def: 0.15,
+        name: "Show folder on cards",
+        desc: "The note's folder, right-aligned on the pills row.",
+        control: { type: "toggle", key: "showFolder" },
       },
-      (v) => (this.plugin.settings.structureInfluence = v),
-    );
-
-    this.toggle(
-      host,
-      "Chunk-level matching",
-      "Embed each note as several chunks instead of one vector, far better on long notes. Rebuilds the index.",
-      this.plugin.settings.chunking,
-      (v) => (this.plugin.settings.chunking = v),
-      true,
-    );
-
-    this.slider(
-      host,
-      "Max chunks per note",
-      "Ceiling on chunks embedded per note. Only very long notes reach it. Rebuilds the index.",
-      { min: 8, max: 64, step: 1, value: this.plugin.settings.maxChunks, def: 48 },
-      (v) => (this.plugin.settings.maxChunks = v),
-    );
-
-    this.toggle(
-      host,
-      "Heading context",
-      "Prefix each section with its heading breadcrumb when embedding. Rebuilds the index.",
-      this.plugin.settings.headingContext,
-      (v) => (this.plugin.settings.headingContext = v),
-      true,
-    );
-
-    this.slider(
-      host,
-      "Shortlist size",
-      "How many candidates get the precise chunk comparison on each note switch.",
-      { min: 20, max: 150, step: 10, value: this.plugin.settings.shortlistSize, def: 60 },
-      (v) => (this.plugin.settings.shortlistSize = v),
-    );
-
+      {
+        name: "Show tag pills",
+        desc: "The shared-tag pill on cards, e.g. #personal.",
+        control: { type: "toggle", key: "showTagPills" },
+      },
+      {
+        name: "Show why-related pills",
+        desc: "The other reason pills on cards: co-cited, similar text, or the note that bridges two others. The Linked and Related chips stay either way.",
+        control: { type: "toggle", key: "showWhyPills" },
+      },
+      {
+        name: "Put linked notes on top",
+        desc: "Cards you already link to or from sort above everything else; order inside each group is unchanged.",
+        control: { type: "toggle", key: "linkedFirst" },
+      },
+      {
+        name: "Open cards in a new tab",
+        desc: "Where a plain click on a card opens the note. Cmd/ctrl click does the opposite of this setting; middle click always opens a new tab, and right click offers all choices.",
+        control: { type: "toggle", key: "openInNewTab" },
+      },
+      {
+        name: "Show last-edited time",
+        desc: "Add a muted “edited Nd ago” line to each card.",
+        control: { type: "toggle", key: "showRecency" },
+      },
+      {
+        name: "Remember the pin across restarts",
+        desc: "Keep the panel's pinned note when Obsidian restarts. Off: the pin clears on startup.",
+        control: { type: "toggle", key: "pinPersist" },
+      },
+    ];
   }
 
   // --- Reader (4.0) ----------------------------------------------------------
-  private readerStatusEl: HTMLElement | null = null;
+  private readerItems(): SettingDefinition<SettingKey>[] {
+    const rungOptions: Record<string, string> = { auto: "Auto (by this machine's memory)" };
+    for (const r of RUNGS) rungOptions[r.id] = r.label;
+    return [
+      {
+        name: "Status",
+        searchable: false,
+        render: (setting) => {
+          const el = setting.descEl;
+          this.readerStatusEl = el;
+          // This render already reflects the current error state.
+          this.readerErrorShown = Boolean(this.plugin.reader?.engineError());
+          this.drawReaderStatus();
+          return () => {
+            if (this.readerStatusEl === el) this.readerStatusEl = null;
+          };
+        },
+      },
+      {
+        name: "Enable the reader",
+        desc: "Turning this on downloads the engine (~50 MB) and the selected model below, then reads notes only while Obsidian is idle. On networks that block downloads, run the command \"Reader: offline setup\".",
+        control: { type: "toggle", key: "readerEnabled" },
+      },
+      {
+        name: "Model",
+        desc: "Auto picks by memory: large on big machines (~4.8 GB download, needs ~6 GB free), mid on 16 GB (~2.5 GB), small below that (~1.3 GB). The small model labels notes but cannot judge; judgment features stay off on it.",
+        aliases: ["reader model", "Qwen"],
+        control: { type: "dropdown", key: "readerRung", options: rungOptions },
+      },
+      {
+        name: "Reading pace",
+        desc: "How often the reader picks up the next note during idle time. It always pauses while you type and while indexing runs.",
+        control: {
+          type: "dropdown",
+          key: "readerPace",
+          options: { light: "Light", balanced: "Balanced", fast: "Fast" },
+        },
+      },
+      {
+        name: "One-liners on cards",
+        desc: "Replace the keyphrase label under each card title with the reader's one-line summary; the fuller summary appears on hover.",
+        control: { type: "toggle", key: "readerOneLiners" },
+      },
+      {
+        name: "Suggest tags that likely fit",
+        desc: "Ghost chips above the panel for the active note. One click adds the tag to frontmatter; suggestions come only from tags your vault already uses.",
+        control: { type: "toggle", key: "readerSuggestTags" },
+      },
+      {
+        name: "Engine failed to load",
+        searchable: false,
+        visible: () => Boolean(this.plugin.reader?.engineError()),
+        render: (setting) => {
+          const err = this.plugin.reader?.engineError() ?? "";
+          setting.setDesc(
+            /block|fetch|network|certificat|offline/i.test(err)
+              ? "This network blocks the downloads. Offline setup fetches the files through your browser instead and does the rest automatically."
+              : "The error above decides the fix; retry after checking memory, or report it with the exact message.",
+          );
+          setting
+            .addButton((b) =>
+              b.setButtonText("Offline setup").onClick(() => {
+                new ReaderOfflineModal(this.plugin).open();
+              }),
+            )
+            .addButton((b) =>
+              b.setButtonText("Retry").onClick(() => {
+                void this.plugin.reader?.enable();
+              }),
+            );
+        },
+      },
+      {
+        name: "On this device",
+        desc: "Reader files, stored outside the vault and never synced.",
+        aliases: ["remove downloads", "disk space"],
+        render: (setting) => {
+          const sizes = assetSizesMb();
+          const parts = [
+            sizes.engine > 0 ? `engine ${Math.round(sizes.engine)} MB` : "",
+            ...sizes.models.map((m) => `${m.file.replace(/\.gguf$/, "")} ${(m.mb / 1000).toFixed(1)} GB`),
+          ].filter(Boolean);
+          if (parts.length === 0) {
+            setting.setDesc("Nothing downloaded.");
+            return;
+          }
+          setting.setDesc(`${parts.join(" · ")}. Stored outside the vault, never synced.`);
+          setting.addButton((b) =>
+            b
+              .setButtonText("Remove downloads")
+              .setDestructive()
+              .onClick(() => this.removeReaderDownloads()),
+          );
+        },
+      },
+    ];
+  }
+
+  private removeReaderDownloads(): void {
+    this.plugin.settings.readerEnabled = false;
+    this.debouncedSave();
+    this.plugin.applyReaderSettings();
+    const stopped = this.plugin.reader ? this.plugin.reader.disable() : Promise.resolve();
+    void stopped.then(() => {
+      removeAssets();
+      this.update();
+    });
+  }
+
+  // Called by the plugin on every reader status change. A change in the engine
+  // error rebuilds the tab (the error row and the page's warning mark follow
+  // it); anything else redraws the status row in place.
+  updateReaderStatus(): void {
+    const r = this.plugin.reader;
+    if (!r) return;
+    const errorNow = Boolean(r.engineError());
+    if (errorNow !== this.readerErrorShown) {
+      this.readerErrorShown = errorNow;
+      this.update();
+      return;
+    }
+    this.drawReaderStatus();
+  }
 
   // The reader's one visible state row: what it is doing right now, with a
   // real progress bar while a download runs and a live counter while it reads.
-  updateReaderStatus(): void {
+  private drawReaderStatus(): void {
     const r = this.plugin.reader;
-    if (!this.readerStatusEl || !r) return;
+    if (!r || !this.readerStatusEl) return;
     const s = r.status;
     const host = this.readerStatusEl;
     host.empty();
@@ -2094,135 +1909,275 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
     }
   }
 
-  private readerSection(host: HTMLElement): void {
-    const save = (): void => {
-      this.debouncedSave();
-      this.plugin.applyReaderSettings();
-    };
-    host.createEl("p", {
-      cls: "setting-item-description",
-      text:
-        "A small reader model that quietly reads your notes in the background, so the panel can label and judge connections better. Runs entirely on your machine. Notes never leave it.",
-    });
-
-    new Setting(host)
-      .setName("Enable the reader")
-      .setDesc(
-        "Turning this on downloads the engine (~50 MB) and the selected model below, then reads notes only while Obsidian is idle. On networks that block downloads, run the command \"Reader: offline setup\".",
-      )
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.readerEnabled).onChange((v) => {
-          this.plugin.settings.readerEnabled = v;
-          save();
-          this.render();
-        }),
-      );
-
-    const rungSetting = new Setting(host)
-      .setName("Model")
-      .setDesc(
-        "Auto picks by memory: large on big machines (~4.8 GB download, needs ~6 GB free), mid on 16 GB (~2.5 GB), small below that (~1.3 GB). The small model labels notes but cannot judge; judgment features stay off on it.",
-      );
-    setTooltip(rungSetting.infoEl, "Default: Auto (by this machine's memory)");
-    rungSetting.addDropdown((d) => {
-        d.addOption("auto", "Auto (by this machine's memory)");
-        for (const r of RUNGS) d.addOption(r.id, r.label);
-        d.setValue(this.plugin.settings.readerRung).onChange((v) => {
-          this.plugin.settings.readerRung = v as RelatedNotesSettings["readerRung"];
-          save();
-        });
-      });
-
-    const paceSetting = new Setting(host)
-      .setName("Reading pace")
-      .setDesc("How often the reader picks up the next note during idle time. It always pauses while you type and while indexing runs.");
-    setTooltip(paceSetting.infoEl, "Default: Balanced");
-    paceSetting.addDropdown((d) =>
-        d
-          .addOption("light", "Light")
-          .addOption("balanced", "Balanced")
-          .addOption("fast", "Fast")
-          .setValue(this.plugin.settings.readerPace)
-          .onChange((v) => {
-            this.plugin.settings.readerPace = v as RelatedNotesSettings["readerPace"];
-            save();
-          }),
-      );
-
-    new Setting(host)
-      .setName("One-liners on cards")
-      .setDesc("Replace the keyphrase label under each card title with the reader's one-line summary; the fuller summary appears on hover.")
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.readerOneLiners).onChange((v) => {
-          this.plugin.settings.readerOneLiners = v;
-          save();
-          this.plugin.requestPanelRender();
-        }),
-      );
-
-    new Setting(host)
-      .setName("Suggest tags that likely fit")
-      .setDesc("Ghost chips above the panel for the active note. One click adds the tag to frontmatter; suggestions come only from tags your vault already uses.")
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.readerSuggestTags).onChange((v) => {
-          this.plugin.settings.readerSuggestTags = v;
-          save();
-          this.plugin.requestPanelRender();
-        }),
-      );
-
-    this.readerStatusEl = host.createEl("p", { cls: "setting-item-description" });
-    this.updateReaderStatus();
-    const err = this.plugin.reader?.engineError();
-    if (err) {
-      new Setting(host)
-        .setName("Engine failed to load")
-        .setDesc(
-          /block|fetch|network|certificat|offline/i.test(err)
-            ? "This network blocks the downloads. Offline setup fetches the files through your browser instead and does the rest automatically."
-            : "The error above decides the fix; retry after checking memory, or report it with the exact message.",
-        )
-        .addButton((b) =>
-          b.setButtonText("Offline setup").onClick(() => {
-            new ReaderOfflineModal(this.plugin).open();
-          }),
-        )
-        .addButton((b) =>
-          b.setButtonText("Retry").onClick(() => {
-            void this.plugin.reader?.enable();
-          }),
-        );
-    }
-    this.readerStorageSection(host);
+  // --- Linking: glow + the [[ suggester --------------------------------------
+  private linkingItems(): SettingDefinition<SettingKey>[] {
+    const glowOff = (): boolean => !this.plugin.settings.glowEnabled;
+    const suggesterOff = (): boolean => !this.plugin.settings.suggesterEnabled;
+    return [
+      {
+        name: "Highlight linkable mentions",
+        desc: "Glow the first mention of a concept that already has a note. Click the glow to make it a [[wikilink]].",
+        aliases: ["glow"],
+        control: { type: "toggle", key: "glowEnabled" },
+      },
+      {
+        name: "Highlight in live preview only",
+        desc: "Skip the glow in raw source mode.",
+        control: {
+          type: "toggle",
+          key: "glowRestrictToLivePreview",
+          disabled: glowOff,
+        },
+      },
+      {
+        name: "Highlight ambiguous mentions",
+        desc: "Also glow a phrase owned by more than one note. Off for precision.",
+        control: {
+          type: "toggle",
+          key: "glowAmbiguous",
+          disabled: glowOff,
+        },
+      },
+      {
+        name: "Auto-link later mentions",
+        desc: "Once a note is linked here, link its remaining mentions in this note while you're idle.",
+        control: { type: "toggle", key: "autoLinkSubsequent" },
+      },
+      {
+        name: "Smart [[ suggestions",
+        desc: "Rank [[ completions by meaning, not just by name.",
+        aliases: ["suggester", "autocomplete"],
+        control: { type: "toggle", key: "suggesterEnabled" },
+      },
+      {
+        name: "Take over the [[ popup",
+        desc: "Put these suggestions at the top of the popup. Off while the Easy Links suggester is active, so the two don't fight.",
+        control: {
+          type: "toggle",
+          key: "suggesterTakeOver",
+          disabled: suggesterOff,
+        },
+      },
+      {
+        name: "Suggest new notes",
+        desc: "Offer to create a note for a strongly-relevant concept that doesn't have one yet.",
+        control: {
+          type: "toggle",
+          key: "suggestNewNotes",
+          disabled: suggesterOff,
+        },
+      },
+      {
+        name: "New-note confidence",
+        desc: "How relevant a concept must be before a “create new note” row is offered.",
+        control: {
+          type: "slider",
+          key: "newNoteMinSimilarity",
+          min: 0,
+          max: 0.9,
+          step: 0.05,
+          displayFormat: (v) => v.toFixed(2),
+          disabled: () => suggesterOff() || !this.plugin.settings.suggestNewNotes,
+        },
+      },
+    ];
   }
 
-  private readerStorageSection(host: HTMLElement): void {
-    const sizes = assetSizesMb();
-    if (sizes.engine > 0 || sizes.models.length > 0) {
-      const parts = [
-        sizes.engine > 0 ? `engine ${Math.round(sizes.engine)} MB` : "",
-        ...sizes.models.map((m) => `${m.file.replace(/\.gguf$/, "")} ${(m.mb / 1000).toFixed(1)} GB`),
-      ].filter(Boolean);
-      new Setting(host)
-        .setName("On this device")
-        .setDesc(`${parts.join(" · ")}. Stored outside the vault, never synced.`)
-        .addButton((b) =>
-          b.setButtonText("Remove downloads").onClick(() => {
-            this.plugin.settings.readerEnabled = false;
-            this.debouncedSave();
-            this.plugin.applyReaderSettings();
-            void this.plugin.reader?.disable().then(() => {
-              removeAssets();
-              this.render();
-            });
+  // --- Scope: which notes take part ------------------------------------------
+  private scopeItems(): SettingDefinition<SettingKey>[] {
+    return [
+      {
+        name: "Excluded folders",
+        desc: "Folders left out of the index entirely. One per line; includes everything beneath.",
+        control: { type: "textarea", key: "excludeFolders", placeholder: "Templates\nArchive/2023", rows: 3 },
+      },
+      {
+        name: "Folders excluded from link suggestions",
+        desc: "Still indexed and ranked, but never suggested as inline [[links]]. One per line.",
+        control: { type: "textarea", key: "excludeFoldersLinks", placeholder: "Daily\nAttachments/templates", rows: 3 },
+      },
+      {
+        name: "Isolated areas (tag namespaces)",
+        desc: "One tag namespace per line. Notes in an area only relate to each other, and never appear elsewhere.",
+        control: { type: "textarea", key: "isolatedAreas", placeholder: "goa", rows: 3 },
+      },
+    ];
+  }
+
+  // --- Engine: how and where the model runs ----------------------------------
+  private engineItems(): SettingDefinition<SettingKey>[] {
+    const idleOptions = { ...IDLE_UNLOAD_OPTIONS };
+    // Honour a hand-edited data.json value the list does not carry; otherwise
+    // the control would show "Never" while the real timeout stays active.
+    const current = String(this.plugin.settings.idleUnloadMinutes);
+    if (!(current in idleOptions)) idleOptions[current] = `After ${current} minutes (custom)`;
+    return [
+      {
+        name: "Compute device",
+        desc: "Auto runs on the CPU and is memory-stable. WebGPU is faster per reindex but can grow memory until Obsidian crashes.",
+        aliases: ["GPU", "WebGPU", "WASM"],
+        control: { type: "dropdown", key: "device", options: DEVICE_OPTIONS },
+      },
+      {
+        name: "Indexing speed",
+        desc: "CPU threads used while indexing. Ignored by jina-v5-nano, which is faster on one. Changing this rebuilds the index.",
+        aliases: ["threads"],
+        control: {
+          type: "dropdown",
+          key: "indexSpeed",
+          options: {
+            light: "Light · 1 thread (slowest)",
+            balanced: "Balanced (recommended)",
+            fast: "Fast · all cores",
+          },
+        },
+      },
+      {
+        name: "Unload model when idle",
+        desc: "Free the model's memory after this long unused. It reloads in a few seconds, with no re-download.",
+        aliases: ["memory"],
+        control: { type: "dropdown", key: "idleUnloadMinutes", options: idleOptions },
+      },
+      {
+        name: "Cached models",
+        desc: "Models cached on this device. Remove one to free disk space after switching.",
+        aliases: ["downloaded models", "disk space"],
+        render: (setting) => this.renderModelCache(setting),
+      },
+    ];
+  }
+
+  // Models transformers.js has downloaded into the browser cache
+  // ("transformers-cache"), with a remove action to free space after switching.
+  private renderModelCache(setting: Setting): void {
+    void (async () => {
+      let ids: string[];
+      try {
+        const cache = await caches.open("transformers-cache");
+        const set = new Set<string>();
+        for (const req of await cache.keys()) {
+          const m = /huggingface\.co\/([^/]+\/[^/]+)\/resolve\//.exec(req.url);
+          if (m) set.add(m[1]);
+        }
+        ids = [...set].sort();
+      } catch {
+        if (setting.settingEl.isConnected) setting.setDesc("Could not read the model cache.");
+        return;
+      }
+      if (!setting.settingEl.isConnected) return;
+      if (ids.length === 0) {
+        setting.setDesc("No models downloaded yet.");
+        return;
+      }
+      const inUse = this.plugin.settings.modelId;
+      let selected = ids.find((id) => id !== inUse) ?? ids[0];
+      setting.addDropdown((d) => {
+        for (const id of ids) d.addOption(id, id === inUse ? `${id} (in use)` : id);
+        d.setValue(selected).onChange((v) => {
+          selected = v;
+        });
+      });
+      setting.addButton((b) =>
+        b
+          .setButtonText("Remove")
+          .setDestructive()
+          .onClick(async () => {
+            try {
+              const cache = await caches.open("transformers-cache");
+              for (const req of await cache.keys()) {
+                if (req.url.includes(`/${selected}/`)) await cache.delete(req);
+              }
+              new Notice(`Removed cached model: ${selected}`);
+            } catch {
+              new Notice("Could not remove the cached model.");
+            }
+            this.update();
           }),
-        );
-    }
+      );
+    })();
+  }
+
+  // --- Advanced matching: knobs most vaults never need -----------------------
+  private advancedItems(): SettingDefinition<SettingKey>[] {
+    const chunkingOff = (): boolean => !this.plugin.settings.chunking;
+    return [
+      {
+        name: "Idea influence",
+        desc: "How much whole-idea overlap counts against a single matching passage. Re-ranks live, no re-index.",
+        control: {
+          type: "slider",
+          key: "ideaInfluence",
+          min: 0,
+          max: 0.6,
+          step: 0.05,
+          displayFormat: (v) => v.toFixed(2),
+          disabled: chunkingOff,
+        },
+      },
+      {
+        name: "Link-graph influence",
+        desc: "Also rank by how your links connect notes, not just by what they say. Surfaces related notes the wording alone would miss. 0 disables it.",
+        control: {
+          type: "slider",
+          key: "graphInfluence",
+          min: 0,
+          max: 1,
+          step: 0.1,
+          displayFormat: (v) => v.toFixed(1),
+        },
+      },
+      {
+        name: "Structure influence",
+        desc: "How much shared tags, links, and frontmatter nudge near-ties. 0 disables it.",
+        control: {
+          type: "slider",
+          key: "structureInfluence",
+          min: 0,
+          max: 0.3,
+          step: 0.01,
+          displayFormat: (v) => v.toFixed(2),
+        },
+      },
+      {
+        name: "Chunk-level matching",
+        desc: "Embed each note as several chunks instead of one vector, far better on long notes. Rebuilds the index.",
+        control: { type: "toggle", key: "chunking" },
+      },
+      {
+        name: "Max chunks per note",
+        desc: "Ceiling on chunks embedded per note. Only very long notes reach it. Rebuilds the index.",
+        control: {
+          type: "slider",
+          key: "maxChunks",
+          min: 8,
+          max: 64,
+          step: 1,
+          disabled: chunkingOff,
+        },
+      },
+      {
+        name: "Heading context",
+        desc: "Prefix each section with its heading breadcrumb when embedding. Rebuilds the index.",
+        control: {
+          type: "toggle",
+          key: "headingContext",
+          disabled: chunkingOff,
+        },
+      },
+      {
+        name: "Shortlist size",
+        desc: "How many candidates get the precise chunk comparison on each note switch.",
+        control: { type: "slider", key: "shortlistSize", min: 20, max: 150, step: 10 },
+      },
+    ];
   }
 
   hide(): void {
-    // Persist any value typed/dragged right before the pane closed.
+    // Persist any value typed or dragged right before the pane closed, and
+    // refresh the summaries that text input does not rebuild.
     this.debouncedSave.run();
+    super.hide();
+    this.update();
   }
 }
 

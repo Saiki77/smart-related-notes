@@ -205,7 +205,7 @@ on the local ONNX runtime, on the **CPU via WASM** by default, multi-threaded so
 full reindex is quick, and memory-stable. (A **WebGPU** option exists and is faster,
 but its GPU backend can accumulate memory on large vaults, so it's an explicit opt-in.)
 The whole engine lives in its **own worker**, which is **shut down after an idle
-period** (configurable) — so when you're just reading and browsing, the model's
+period** (configurable), so when you're just reading and browsing, the model's
 hundreds of MB to several GB are returned to the system instead of sitting resident;
 it reloads transparently in a few seconds when next needed. An **Indexing speed**
 setting trades CPU threads against reindex time. The only network traffic ever is
@@ -223,52 +223,47 @@ tag-free concept search stands.
 
 ## Settings
 
-### Quality and speed
+The main settings page holds what most people change: **Setup** and the
+**Results panel**. Everything else sits on its own page under **More**:
+Reader, Linking, Scope, Engine and Advanced matching, each with a one-line
+summary of its current state. Every setting appears in Obsidian's settings
+search.
 
-- **Performance profile**: one-click presets. **Balanced** is lighter and faster;
-  **Best quality** uses a larger model and more context for the strongest matches.
-- **Model**: the embedding model (a dropdown of vetted choices, or paste a custom
-  Hugging Face id). The default `paraphrase-multilingual-MiniLM-L12-v2` is a
-  symmetric sentence-similarity model, the right tool for ranking how alike two
+### Setup
+
+- **Model**: the embedding model. The default `paraphrase-multilingual-MiniLM-L12-v2`
+  is a symmetric sentence-similarity model, the right tool for ranking how alike two
   notes are. `paraphrase-multilingual-mpnet-base-v2` (Best quality) is stronger but
   larger. e5 models are retrieval-oriented and rank note similarity less well.
-- **Compute device**: **Auto** (recommended) runs on the **CPU (WASM)**, which is
-  memory-stable. **WebGPU** is faster but its GPU backend can accumulate memory on
-  large vaults, so it's an explicit opt-in. Switching re-downloads the model.
-- **Indexing speed**: how many CPU threads embed notes. **Fast** (all cores,
-  quickest), **Balanced** (default), **Light** (1 thread, slowest). A CPU/speed
-  knob — the engine's memory is dominated by the loaded model itself, not the
-  thread count. Editing a note stays fast at any setting.
-- **Unload model when idle**: after this long without indexing or searching
-  (default 15 minutes; "Right after use" unloads 30 seconds after the last
-  embed), the embedding engine is shut down and its memory returned to the
-  system. It reloads automatically in a few seconds on the next use — no
-  re-download. Ranking when switching notes never needs the engine and is
-  unaffected.
+  jina-v5-nano is the strongest here (a non-commercial license). A custom Hugging
+  Face id set in `data.json` stays selectable. Changing the model re-embeds the vault.
+- **Index**: how many notes are embedded, and how many were skipped, with a
+  **Rebuild index** button (also on the command palette and the panel's refresh icon).
+- **Performance profile**: one-click presets. **Balanced** is lighter and faster;
+  **Best quality** uses a larger model and more context for the strongest matches.
 
-### The panel
+### Results panel
 
 - **Number of results**: how many cards to show.
 - **Minimum similarity**: hide matches below this topical-similarity score (0-1).
   Scores are mean-centered (the embedding noise floor is removed), so unrelated notes
   sit near 0 and ~0.2 cleanly separates on-topic notes. Raise for a tighter list.
-- **Show snippet**: toggle the per-card text preview.
+- **What a card shows**: the summary line (or the snippet when the summary is off),
+  the folder, tag pills, why-related pills, and the last-edited time.
+- **How cards behave**: open in a new tab or in place, put linked notes on top,
+  and keep the panel's pin across restarts.
 
-### Ranking
+### Reader
 
-- **Link-graph influence**: how much the shape of your links counts alongside the
-  wording (0-1, default 1). This is the 3.0 channel described above; 0 reverts to
-  ranking by content only. A live knob, no re-index.
-- **Idea influence**: how much idea-level matching blends into the score (0-0.6).
-  Notes are grouped into coherent ideas (~200-500 words); this weights whether two
-  notes share a whole idea, not just one passage. 0 is passage-only. It is a live
-  ranking knob; changing it re-ranks instantly with no re-index, so you can compare.
-- **Isolated areas**: self-contained areas, one tag namespace per line (e.g. `goa`).
-  A note tagged with an activated namespace (matching `goa` and `goa/character`) only
-  relates to, and takes tag suggestions from, other notes in that area, and never
-  appears in any other note's cards. Notes in no activated area share one pool. A live
-  ranking knob (no re-index). Use it to keep a self-contained project (a novel, a world)
-  from bleeding into unrelated notes.
+The optional local reader model: enable it, pick its size and reading pace, and
+choose whether one-liners and tag suggestions appear. The page also shows what the
+reader is doing, the disk space its files use, and a button to remove them.
+
+### Linking
+
+The glow on linkable mentions (live preview only, ambiguous mentions, auto-linking
+later mentions) and the smart `[[` suggestions (take over the popup, suggest new
+notes, and how confident a new-note suggestion must be).
 
 ### Scope
 
@@ -276,18 +271,44 @@ tag-free concept search stands.
   beneath them); not ranked and not suggested as links. One per line or comma-separated.
 - **Folders excluded from link suggestions**: folders whose notes stay indexed and
   ranked in the panel, but are never suggested as inline wikilinks.
+- **Isolated areas**: self-contained areas, one tag namespace per line (e.g. `goa`).
+  A note tagged with an activated namespace (matching `goa` and `goa/character`) only
+  relates to, and takes tag suggestions from, other notes in that area, and never
+  appears in any other note's cards. Notes in no activated area share one pool. A live
+  ranking setting, no re-index. Use it to keep a self-contained project (a novel, a
+  world) from bleeding into unrelated notes.
 
-### Advanced
+### Engine
 
-- **Max chunks per note**: ceiling on passages embedded per note. The whole note is
-  covered up to this cap; only very long notes approach it.
-- **Heading context**: embeds each section's first chunk with its note + heading
-  breadcrumb for context. On by default; toggle to compare.
-- **Rebuild index**: force a full re-embed (also on the command palette and the
-  panel's refresh icon).
+- **Compute device**: **Auto** (recommended) runs on the **CPU (WASM)**, which is
+  memory-stable. **WebGPU** is faster but its GPU backend can accumulate memory on
+  large vaults, so it's an explicit opt-in. Switching re-downloads the model.
+- **Indexing speed**: how many CPU threads embed notes. **Fast** (all cores,
+  quickest), **Balanced** (default), **Light** (1 thread, slowest). The engine's
+  memory is dominated by the loaded model, not by the thread count. Editing a note
+  stays fast at any setting.
+- **Unload model when idle**: after this long without indexing or searching
+  (default 15 minutes; "Right after use" unloads 30 seconds after the last embed),
+  the embedding engine shuts down and returns its memory. It reloads in a few
+  seconds on the next use, with no re-download. Ranking when you switch notes never
+  needs the engine.
+- **Cached models**: the embedding models stored on this device, with a button to
+  remove one after switching.
 
-Changing the model or compute device transparently rebuilds the index; unrelated
-changes (sliders, toggles) never trigger a re-embed.
+### Advanced matching
+
+- **Link-graph influence**: how much the shape of your links counts alongside the
+  wording (0-1, default 1). 0 ranks by content only. A live setting, no re-index.
+- **Idea influence**: how much idea-level matching blends into the score (0-0.6).
+  Notes are grouped into coherent ideas (~200-500 words); this weights whether two
+  notes share a whole idea, not just one passage. A live setting, no re-index.
+- **Structure influence**: how much shared tags, links and frontmatter nudge near-ties.
+- **Chunk-level matching**, **Max chunks per note** and **Heading context**: how notes
+  are cut into passages before embedding. Changing them re-embeds the vault.
+- **Shortlist size**: how many candidates get the precise passage comparison.
+
+Changing the model, the compute device, the indexing speed or the passage settings
+rebuilds the index; every other setting applies at once, without a re-embed.
 
 ## Install
 
@@ -311,29 +332,42 @@ repository in [BRAT](https://github.com/TfTHacker/obsidian42-brat), or download
 
 ## What the plugin touches, and why
 
-An automated review of a release flags four capabilities; each is there on
-purpose:
+Automated reviews of a release list the capabilities below. Each one is there on
+purpose, and none of them sends note content anywhere.
 
+- **Network requests**: model files from `huggingface.co`; the ONNX runtime from
+  `cdn.jsdelivr.net`, with `unpkg.com` as a fallback; and, only after you enable the
+  reader, its engine from `registry.npmjs.org`. Each download happens once and is
+  cached. All requests use Obsidian's own `requestUrl`, so system proxies and
+  enterprise certificates apply. There is no telemetry.
+- **WASM files**: the embedding runtime is onnxruntime-web, pinned to the exact build
+  the bundled code expects. Before the plugin loads it, every file must match the
+  size and the SHA-256 digest recorded from the npm package (`src/ort-version.ts`),
+  whichever server delivered it. The reader's engine packages are checked against
+  the registry's sha512 values, and its model files against pinned sha256 values.
 - **Filesystem access outside the vault**: the reader's engine and models
-  (1 to 5 GB) live under `~/.cache/smart-related-notes/`, never inside the
-  vault, so sync tools and backups are not dragged through them. Nothing
-  else outside the vault is read or written; the optional offline setup
-  additionally reads your Downloads folder, only while its dialog is open.
-- **Shell or process execution**: the plugin itself never runs commands.
-  The flag comes from llama.cpp's Node bindings compiled into `main.js`,
-  which contain a self-test helper for their native binary.
-- **Vault enumeration**: ranking every note by meaning requires reading
-  every note; that is the product.
-- **Clipboard**: one button ("Copy links" in the offline setup) writes to
-  it. Nothing reads it.
+  (1 to 5 GB) live under `~/.cache/smart-related-notes/`, never inside the vault,
+  so sync tools and backups are not dragged through them. Nothing else outside the
+  vault is read or written; the optional offline setup also reads your Downloads
+  folder, only while its dialog is open.
+- **Shell or process execution**: the plugin itself never runs commands. The
+  reference comes from the llama.cpp Node bindings compiled into `main.js` for the
+  reader, which contain a self-test helper for their native binary; they load only
+  after you enable the reader. The git client those bindings use for source builds
+  is left out of the bundle, because the plugin uses prebuilt binaries only.
+- **Vault enumeration**: ranking every note by meaning requires reading every note;
+  that is the product.
+- **Clipboard**: one button ("Copy links" in the offline setup) writes to it.
+  Nothing reads it.
 
-Releases carry GitHub artifact attestations, and the review's build
-verification reproduces `main.js` from this repository byte for byte.
+`npm audit --omit=dev` reports no known vulnerabilities in the runtime dependencies.
+Releases carry GitHub artifact attestations, and the review's build verification
+reproduces `main.js` from this repository byte for byte.
 
 ## Requirements
 
 - Desktop only (the embedding runtime needs a desktop Electron environment).
-- Obsidian 1.7.2 or newer.
+- Obsidian 1.13.1 or newer. Older versions keep 4.0.22.
 
 ## Development
 
@@ -361,7 +395,7 @@ Web Worker bundled as a second esbuild stage and inlined into `main.js` (see
 `esbuild.config.mjs` and `src/worker/embed-worker.ts`); terminating that worker is
 what returns the engine's memory to the OS when idle. Environments that expose a
 Node-like `process` would make transformers.js pick the (externalized,
-unavailable) `onnxruntime-node` backend — `src/ort-shim.ts` (imported first in
+unavailable) `onnxruntime-node` backend. `src/ort-shim.ts` (imported first in
 the worker entry) flips the relevant process markers during module evaluation so
 the web runtime is used and WebGPU/WASM work.
 

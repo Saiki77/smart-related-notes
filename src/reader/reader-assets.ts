@@ -132,10 +132,9 @@ async function extractNpmPackage(
     dist: { tarball: string; integrity: string };
   };
   progress(`Downloading ${name}`, 0, 1);
-  // fetch, not requestUrl: this and the model download below stream through
-  // Chromium's network stack (system proxy, enterprise certificates) and the
-  // model one cannot be buffered whole in memory the way requestUrl does.
-  const raw = new Uint8Array(await (await fetch(meta.dist.tarball)).arrayBuffer());
+  // requestUrl goes through Obsidian's own network path (system proxy,
+  // enterprise certificates). A package tarball is small enough to hold whole.
+  const raw = new Uint8Array((await requestUrl({ url: meta.dist.tarball })).arrayBuffer);
   const want = meta.dist.integrity;
   const got = `sha512-${crypto.createHash("sha512").update(raw).digest("base64")}`;
   if (want !== got) throw new Error(`checksum mismatch for ${name}`);
@@ -158,53 +157,106 @@ function extractTarball(gz: Uint8Array, keep: RegExp, destRoot: string): void {
 
 // ---------------------------------------------------------------- gguf -----
 
-// Resumable streaming download with an incremental sha256 that survives ONLY
-// full non-resumed runs; on resume the hash is recomputed from disk first.
-async function downloadGguf(rung: RungSpec, progress: AssetProgress): Promise<void> {
+// Model files arrive in ranged pieces through requestUrl, Obsidian's own network
+// path (system proxy, enterprise certificates), so a multi-gigabyte file is never
+// held in memory whole. Hugging Face serves byte ranges for every model file.
+export const GGUF_CHUNK_BYTES = 32 * 1024 * 1024;
+
+function headerValue(headers: Record<string, string>, name: string): string | undefined {
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === name);
+  return key === undefined ? undefined : headers[key];
+}
+
+// fs.writeSync can write fewer bytes than it was given (large buffers): loop.
+function writeAll(fd: number, bytes: Uint8Array): void {
+  let off = 0;
+  while (off < bytes.byteLength) off += fs.writeSync(fd, bytes, off, bytes.byteLength - off);
+}
+
+// Feed a partial download through the hash piece by piece: a resumed file can be
+// several gigabytes and must not be read into memory in one go.
+function hashFile(hash: crypto.Hash, file: string): number {
+  const fd = fs.openSync(file, "r");
+  const buf = Buffer.alloc(16 * 1024 * 1024);
+  let size = 0;
+  try {
+    for (;;) {
+      const n = fs.readSync(fd, buf, 0, buf.length, null);
+      if (n === 0) break;
+      hash.update(buf.subarray(0, n));
+      size += n;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return size;
+}
+
+// Resumable ranged download. The sha256 covers the whole file, including the
+// bytes an earlier run left in the .part file, and must match the pin.
+// Exported for the download test only.
+export async function downloadGguf(rung: RungSpec, progress: AssetProgress): Promise<void> {
   const dest = modelPath(rung);
   const part = `${dest}.part`;
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   if (fs.existsSync(dest)) return;
 
   const base = `https://huggingface.co/${rung.repo}`;
-  // The LFS pointer file carries the upstream sha256.
-  const pointer = (await requestUrl({ url: `${base}/raw/main/${rung.file}` })).text;
-  const wantSha = /sha256:([0-9a-f]{64})/.exec(pointer)?.[1] ?? null;
+  const pin: { sha256: string; bytes: number } | undefined = GGUF_PIN[rung.file];
+  let wantSha: string | null = pin?.sha256 ?? null;
+  let total = pin?.bytes ?? 0;
+  if (!pin) {
+    // Not pinned: the LFS pointer file carries the upstream sha256 and size.
+    const pointer = (await requestUrl({ url: `${base}/raw/main/${rung.file}` })).text;
+    wantSha = /sha256:([0-9a-f]{64})/.exec(pointer)?.[1] ?? null;
+    total = Number(/^size (\d+)$/m.exec(pointer)?.[1] ?? 0);
+  }
 
-  const hash = crypto.createHash("sha256");
-  let have = 0;
-  if (fs.existsSync(part)) {
-    have = fs.statSync(part).size;
-    // Feed the existing bytes through the hash so verification stays valid.
-    hash.update(fs.readFileSync(part));
-  }
-  const total = rung.sizeMb * 1024 * 1024;
-  const res = await fetch(`${base}/resolve/main/${rung.file}`, {
-    headers: have > 0 ? { Range: `bytes=${have}-` } : {},
-  });
-  if (!res.ok && res.status !== 206) throw new Error(`model download failed: HTTP ${res.status}`);
-  if (res.status === 200 && have > 0) {
+  let hash = crypto.createHash("sha256");
+  let have = fs.existsSync(part) ? hashFile(hash, part) : 0;
+  if (total > 0 && have > total) {
+    // Longer than the file can be: start over.
     fs.rmSync(part, { recursive: false, force: true });
+    hash = crypto.createHash("sha256");
     have = 0;
-    hash.destroy?.();
-    return downloadGguf(rung, progress);
   }
-  const out = fs.createWriteStream(part, { flags: have > 0 ? "a" : "w" });
-  const reader = (res.body as ReadableStream<Uint8Array>).getReader();
-  let sinceReport = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    hash.update(value);
-    have += value.byteLength;
-    sinceReport += value.byteLength;
-    if (!out.write(value)) await new Promise<void>((r) => out.once("drain", () => r()));
-    if (sinceReport > 16 * 1024 * 1024) {
-      sinceReport = 0;
-      progress(`Downloading ${rung.label}`, have, Math.max(total, have));
+
+  const url = `${base}/resolve/main/${rung.file}`;
+  const fd = fs.openSync(part, "a");
+  let reported = have;
+  try {
+    while (total === 0 || have < total) {
+      const end = (total > 0 ? Math.min(have + GGUF_CHUNK_BYTES, total) : have + GGUF_CHUNK_BYTES) - 1;
+      const res = await requestUrl({ url, headers: { Range: `bytes=${have}-${end}` }, throw: false });
+      // Past the end of a file whose size was not known up front: done.
+      if (res.status === 416 && total === 0 && have > 0) break;
+      if (res.status === 200) {
+        // The server ignored the range and sent the whole file: keep that.
+        const whole = new Uint8Array(res.arrayBuffer);
+        fs.ftruncateSync(fd, 0);
+        writeAll(fd, whole);
+        hash = crypto.createHash("sha256").update(whole);
+        have = whole.byteLength;
+        total = have;
+        break;
+      }
+      if (res.status !== 206) throw new Error(`model download failed: HTTP ${res.status}`);
+      if (total === 0) {
+        total = Number(/\/(\d+)\s*$/.exec(headerValue(res.headers, "content-range") ?? "")?.[1] ?? 0);
+      }
+      const chunk = new Uint8Array(res.arrayBuffer);
+      if (chunk.byteLength === 0) throw new Error("model download failed: the server sent no data");
+      writeAll(fd, chunk);
+      hash.update(chunk);
+      have += chunk.byteLength;
+      if (have - reported >= 64 * 1024 * 1024) {
+        reported = have;
+        progress(`Downloading ${rung.label}`, have, Math.max(total, have));
+      }
     }
+  } finally {
+    fs.closeSync(fd);
   }
-  await new Promise<void>((r) => out.end(() => r()));
   const gotSha = hash.digest("hex");
   if (wantSha && gotSha !== wantSha) {
     fs.rmSync(part, { recursive: false, force: true });

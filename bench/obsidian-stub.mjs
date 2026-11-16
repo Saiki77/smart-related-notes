@@ -33,6 +33,7 @@ export function normalizePath(p) { return p.replace(/\\/g, "/").replace(/^\/+/, 
 export function debounce(fn) {
   const wrapped = (...args) => fn(...args);
   wrapped.cancel = () => {};
+  wrapped.run = () => {};
   return wrapped;
 }
 export function parseFrontMatterAliases() { return null; }
@@ -43,11 +44,59 @@ export function getFrontMatterInfo() { return { exists: false, frontmatter: "", 
 export class App {}
 export class ItemView {}
 export class Plugin {}
-export class PluginSettingTab {}
-export class Setting {}
+// Settings tab base: records the calls the declarative API makes on it.
+export class PluginSettingTab {
+  constructor(app, plugin) { this.app = app; this.plugin = plugin; this.updateCalls = 0; this.refreshCalls = 0; }
+  update() { this.updateCalls++; }
+  refreshDomState() { this.refreshCalls++; }
+  hide() {}
+}
+// A fluent Setting row that records what a render callback adds to it.
+function fakeEl() {
+  return {
+    isConnected: true, text: "", classes: [], children: [],
+    empty() { this.children = []; this.text = ""; },
+    setText(t) { this.text = t; },
+    addClass(c) { this.classes.push(c); },
+    setCssProps() {},
+    createDiv() { const el = fakeEl(); this.children.push(el); return el; },
+  };
+}
+function fakeComponent(kind, row) {
+  const c = { kind, options: {}, value: undefined };
+  const self = new Proxy(c, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      if (prop === "addOption") return (v, label) => { target.options[v] = label; return self; };
+      if (prop === "setValue") return (v) => { target.value = v; return self; };
+      return () => self;
+    },
+  });
+  row.components.push(c);
+  return self;
+}
+export class Setting {
+  constructor() { this.name = ""; this.desc = ""; this.components = []; this.settingEl = fakeEl(); this.descEl = fakeEl(); this.controlEl = fakeEl(); }
+  setName(n) { this.name = n; return this; }
+  setDesc(d) { this.desc = d; return this; }
+  setDisabled() { return this; }
+  setHeading() { return this; }
+  addButton(cb) { cb(fakeComponent("button", this)); return this; }
+  addDropdown(cb) { cb(fakeComponent("dropdown", this)); return this; }
+  addToggle(cb) { cb(fakeComponent("toggle", this)); return this; }
+  addSlider(cb) { cb(fakeComponent("slider", this)); return this; }
+  addTextArea(cb) { cb(fakeComponent("textarea", this)); return this; }
+}
+export const Keymap = { isModEvent: () => false };
+export const editorLivePreviewField = {};
+export function getAllTags() { return []; }
 export class Modal {}
 export class EditorSuggest {}
 export function setIcon() {}
+// requestUrl for tests: a replaceable implementation, set with __setRequestUrl.
+let requestUrlImpl = () => { throw new Error("stub: no network in tests"); };
+export function requestUrl(req) { return requestUrlImpl(typeof req === "string" ? { url: req } : req); }
+export function __setRequestUrl(fn) { requestUrlImpl = fn; }
 export function prepareFuzzySearch() { return () => null; }
 
 const HEADING_RE = /^\s{0,3}(#{1,6})\s+(.+?)\s*$/gm;
@@ -167,5 +216,4 @@ export class Component {}
 export class Menu {}
 export class Platform {}
 export const apiVersion = "1.7.2";
-export function requestUrl() { throw new Error("stub: no network in tests"); }
 export function normalizePath2() {}

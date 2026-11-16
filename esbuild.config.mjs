@@ -128,6 +128,26 @@ const readerNodeShim = {
   },
 };
 
+// node-llama-cpp imports simple-git only to clone and patch llama.cpp for a
+// source build. The reader always runs getLlama({ build: "never" }) with the
+// prebuilt binaries, so that path cannot run; this stub keeps the git client,
+// and the process spawning it does, out of the shipped bundle.
+const readerGitStub = {
+  name: "reader-git-stub",
+  setup(build) {
+    build.onResolve({ filter: /^simple-git$/ }, (args) => ({
+      path: args.path,
+      namespace: "srn-git-stub",
+    }));
+    build.onLoad({ filter: /.*/, namespace: "srn-git-stub" }, () => ({
+      loader: "js",
+      contents:
+        "export function simpleGit() { throw new Error('Building llama.cpp from source is not supported in Smart Related Notes.'); }\n" +
+        "export default simpleGit;\n",
+    }));
+  },
+};
+
 async function bundleReaderEngine() {
   const result = await esbuild.build({
     entryPoints: ["src/reader/engine-entry.mjs"],
@@ -136,7 +156,7 @@ async function bundleReaderEngine() {
     format: "esm",
     target: "es2022",
     external: ["@node-llama-cpp/*"],
-    plugins: [readerNodeShim],
+    plugins: [readerGitStub, readerNodeShim],
     // The module executes from a blob: URL, but every path derived from
     // import.meta.url must point at the staged file on disk; the loader sets
     // this global to the real file URL before importing.

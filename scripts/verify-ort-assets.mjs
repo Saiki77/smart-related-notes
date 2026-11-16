@@ -1,5 +1,6 @@
 // Release gate: every ORT runtime pair gen-ort.mjs pinned must exist in ort/ at
-// exactly the pinned size. Run after `npm run build` (which runs gen-ort.mjs).
+// exactly the pinned size and SHA-256 digest. Run after `npm run build` (which
+// runs gen-ort.mjs).
 //
 // Both pairs matter, for different reasons:
 //   wasm   — the CPU-only build, and the ONLY one carrying a com.microsoft
@@ -9,6 +10,7 @@
 // A missing or wrong-sized file means onnxruntime-web changed its dist layout,
 // or gen-ort.mjs drifted from it. Either way the plugin's size validation would
 // reject the download at runtime, so fail the release here instead.
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,16 +25,18 @@ if (!match) {
 
 let bad = 0;
 for (const [build, files] of Object.entries(JSON.parse(match[1]))) {
-  for (const [name, pinned] of [
-    [files.glue, files.glueBytes],
-    [files.wasm, files.wasmBytes],
+  for (const [name, pinned, pinnedSha] of [
+    [files.glue, files.glueBytes, files.glueSha256],
+    [files.wasm, files.wasmBytes, files.wasmSha256],
   ]) {
     const path = join("ort", name);
-    const size = existsSync(join(here, path)) ? statSync(join(here, path)).size : -1;
-    if (size === pinned) {
-      console.log(`${build}: ${path} ${size} B ok`);
+    const full = join(here, path);
+    const size = existsSync(full) ? statSync(full).size : -1;
+    const sha = size >= 0 ? createHash("sha256").update(readFileSync(full)).digest("hex") : "";
+    if (size === pinned && sha === pinnedSha) {
+      console.log(`${build}: ${path} ${size} B, sha256 ${sha.slice(0, 12)} ok`);
     } else {
-      console.error(`${build}: ${path} is ${size} B, pinned ${pinned} B`);
+      console.error(`${build}: ${path} is ${size} B sha256 ${sha.slice(0, 12)}, pinned ${pinned} B sha256 ${String(pinnedSha).slice(0, 12)}`);
       bad++;
     }
   }
