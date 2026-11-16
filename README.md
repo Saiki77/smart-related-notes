@@ -104,9 +104,11 @@ were each built, measured, and dropped.
 ### Finding what relates
 
 - **Semantic ranking**: for the active note, ranks every other note by meaning and
-  shows the top matches as cards: **title**, muted **folder path**, a short
-  **snippet**, and a **similarity %** pill. Click a card to open that note. With no
-  note open, the panel lists your **recent notes** instead of sitting empty.
+  shows the top matches as plain rows: the **title** with a muted **similarity %**,
+  and a one-line **summary** under it. Hover the % to see why the note is related and
+  its folder. Click a row to open that note. Three other layouts (Cards, Cards with
+  pills, Classic) show the reason and the folder on each card. With no note open, the
+  panel lists your **recent notes** instead of sitting empty.
 - **Link-graph ranking**: the panel does not rank by wording alone. When two notes
   share context you have already connected them through, that counts as evidence they
   belong together, and such a card says *via* the note that bridges them. This is what
@@ -157,9 +159,10 @@ were each built, measured, and dropped.
 - **Incremental updates**: changed, created and renamed notes are re-embedded on a
   20-second idle pause, so typing never kicks off work mid-edit.
 - **Keyword fallback**: while the index is still building, the panel falls back to a
-  cheap keyword ranking (shown with a `~` pill) so it is never empty.
-- **Clear status**: a live status line shows progress, and surfaces an error rather
-  than silently showing nothing.
+  cheap keyword ranking (its scores start with `~`) so it is never empty.
+- **Clear status**: a live status line shows progress while the index builds, and
+  surfaces an error rather than silently showing nothing. When the index is ready,
+  the header shows the note count next to the note the list is based on.
 
 <p align="center">
   <img src="docs/feature-local.svg" alt="Runs entirely on your machine: on your device, nothing to install, private and offline" width="880">
@@ -244,12 +247,20 @@ search.
 
 ### Results panel
 
-- **Number of results**: how many cards to show.
+- **Layout**: how each related note looks.
+  - **Rows** (default): two lines per note and no boxes. The reason and the folder
+    show when you hover the %. A link icon marks notes you already link to.
+  - **Cards**: a box per note, with the reason and the folder as one faint line.
+  - **Cards with pills**: a box per note, with the reason and the folder as outline
+    pills.
+  - **Classic**: the 4.0 cards with filled pills.
+- **Number of results**: how many notes to show.
 - **Minimum similarity**: hide matches below this topical-similarity score (0-1).
   Scores are mean-centered (the embedding noise floor is removed), so unrelated notes
   sit near 0 and ~0.2 cleanly separates on-topic notes. Raise for a tighter list.
-- **What a card shows**: the summary line (or the snippet when the summary is off),
-  the folder, tag pills, why-related pills, and the last-edited time.
+- **What a card shows**: the summary line (or the snippet when the summary is off)
+  and the last-edited time. In the card layouts also the folder, the shared tag and
+  the other reasons (co-cited, similar text, or the note that bridges two others).
 - **How cards behave**: open in a new tab or in place, put linked notes on top,
   and keep the panel's pin across restarts.
 

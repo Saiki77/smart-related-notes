@@ -49,6 +49,10 @@ import { ORT_WEB_CDN, ORT_WEB_VERSION, ORT_RUNTIMES, type OrtRuntimeFiles } from
 // (slowest); Fast uses a capped slice of the cores (fastest). A CPU/speed knob —
 // the engine's memory is dominated by the loaded model, not the thread count.
 export type IndexSpeed = "light" | "balanced" | "fast";
+// How each related note looks in the panel. Rows is the default: two lines per
+// note and no boxes. The card styles add the reason and the folder; classic is
+// the 4.0 look with filled pills.
+export type CardLayout = "rows" | "cards" | "pills" | "classic";
 function threadsForSpeed(speed: IndexSpeed): number {
   const cores =
     typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
@@ -109,6 +113,7 @@ export interface RelatedNotesSettings {
   chunking: boolean; // master toggle for the chunk-level path
   structureInfluence: number; // B_MAX for the hybrid structural boost (0..0.3)
   showSummary: boolean; // keyphrase topic-label line (supersedes snippet when on)
+  cardLayout: CardLayout; // how each related note looks in the panel
   showRecency: boolean; // muted "edited Nd ago" line
   showFolder: boolean; // folder path on cards
   showWhyPills: boolean; // why-related reason pill (Co-cited, Similar text, via ...)
@@ -167,6 +172,7 @@ export const DEFAULT_SETTINGS: RelatedNotesSettings = {
   chunking: true,
   structureInfluence: 0.15,
   showSummary: true,
+  cardLayout: "rows",
   showRecency: false,
   showFolder: true,
   showWhyPills: true,
@@ -1426,6 +1432,7 @@ const READER_KEYS = new Set<string>([
 ]);
 // Change what a card shows: the panel re-renders at once.
 const PANEL_KEYS = new Set<string>([
+  "cardLayout",
   "showFolder",
   "showTagPills",
   "showWhyPills",
@@ -1674,7 +1681,25 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
 
   // --- Results panel: what the card stack shows ------------------------------
   private resultsItems(): SettingDefinition<SettingKey>[] {
+    // Rows show only the title, the score and the summary; the reason and the
+    // folder appear when you hover the score instead.
+    const rows = (): boolean => this.plugin.settings.cardLayout === "rows";
     return [
+      {
+        name: "Layout",
+        desc: "How each related note looks. Rows is the cleanest: two lines per note. Cards and Cards with pills also show why a note is related and its folder.",
+        aliases: ["cards", "rows", "pills", "style"],
+        control: {
+          type: "dropdown",
+          key: "cardLayout",
+          options: {
+            rows: "Rows",
+            cards: "Cards",
+            pills: "Cards with pills",
+            classic: "Classic (4.0)",
+          },
+        },
+      },
       {
         name: "Number of results",
         desc: "How many related notes the card stack shows.",
@@ -1709,18 +1734,18 @@ export class RelatedNotesSettingTab extends PluginSettingTab {
       },
       {
         name: "Show folder on cards",
-        desc: "The note's folder, right-aligned on the pills row.",
-        control: { type: "toggle", key: "showFolder" },
+        desc: "The note's folder on each card. In the Rows layout it shows when you hover the score.",
+        control: { type: "toggle", key: "showFolder", disabled: rows },
       },
       {
         name: "Show tag pills",
-        desc: "The shared-tag pill on cards, e.g. #personal.",
-        control: { type: "toggle", key: "showTagPills" },
+        desc: "The shared tag on cards, e.g. #personal.",
+        control: { type: "toggle", key: "showTagPills", disabled: rows },
       },
       {
         name: "Show why-related pills",
-        desc: "The other reason pills on cards: co-cited, similar text, or the note that bridges two others. The Linked and Related chips stay either way.",
-        control: { type: "toggle", key: "showWhyPills" },
+        desc: "The other reasons on cards: co-cited, similar text, or the note that bridges two others.",
+        control: { type: "toggle", key: "showWhyPills", disabled: rows },
       },
       {
         name: "Put linked notes on top",

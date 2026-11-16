@@ -106,6 +106,35 @@
   color: var(--text-error);
 }
 
+/* "Based on X · 147 notes" on one line: the subtitle shrinks with an ellipsis,
+   the count keeps its width. The status line below appears only while
+   something is happening (indexing, a download, an error). */
+.related-notes-view .rn-sub-row {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  margin-top: var(--size-2-1);
+  font-size: var(--font-ui-smaller);
+}
+.related-notes-view .rn-sub-row .rn-subtitle {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-top: 0;
+}
+.related-notes-view .rn-count {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.related-notes-view .rn-subtitle:not(:empty) + .rn-count:not(:empty)::before {
+  content: "·";
+  margin: 0 0.4em;
+}
+.related-notes-view .rn-status:empty {
+  display: none;
+}
+
 /* === Card stack ============================================================= */
 .related-notes-view .rn-list {
   flex: 1 1 auto;
@@ -242,6 +271,95 @@
   text-align: center;
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
+}
+
+/* === Layouts ================================================================
+   The list carries one class: rn-layout-rows (default), rn-layout-cards,
+   rn-layout-pills or rn-layout-classic. Classic is the 4.0 look and uses the
+   rules above as they are. The other three share a quiet score and a link icon;
+   Cards and Cards with pills keep the bordered boxes. */
+.related-notes-view .rn-list:not(.rn-layout-classic) .rn-card-top {
+  align-items: baseline;
+}
+
+.related-notes-view .rn-score-text {
+  flex: 0 0 auto;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--line-height-tight);
+}
+.related-notes-view .rn-score-text.rn-score-approx {
+  color: var(--text-faint);
+  background-color: transparent;
+}
+
+/* Linked notes: a small link icon before the title instead of a pill. */
+.related-notes-view .rn-linked-icon {
+  --icon-size: 12px;
+  --icon-stroke: 2px;
+  display: inline-flex;
+  margin-right: 4px;
+  vertical-align: -1px;
+  color: var(--text-accent);
+}
+.related-notes-view .rn-linked-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Cards: the reason and the folder as one faint line under the summary. */
+.related-notes-view .rn-meta {
+  margin-top: var(--size-2-1);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Cards with pills: outline pills, no fills. */
+.related-notes-view .rn-pill {
+  font-size: var(--font-ui-smaller);
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  background-color: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+}
+.related-notes-view .rn-pill-linked {
+  color: var(--text-accent);
+  background-color: transparent;
+}
+
+/* Rows: no boxes. A hairline between notes and a soft hover. */
+.related-notes-view .rn-list.rn-layout-rows {
+  gap: 0;
+  padding: var(--size-2-2) var(--size-2-3);
+}
+.related-notes-view .rn-layout-rows .rn-card {
+  padding: var(--size-4-2) var(--size-2-3);
+  border: none;
+  border-bottom: 1px solid var(--background-modifier-border);
+  border-radius: 0;
+  background-color: transparent;
+}
+.related-notes-view .rn-layout-rows .rn-card:last-child {
+  border-bottom: none;
+}
+.related-notes-view .rn-layout-rows .rn-card:hover {
+  border-bottom-color: var(--background-modifier-border);
+  background-color: var(--background-modifier-hover);
+}
+.related-notes-view .rn-layout-rows .rn-card:active {
+  transform: none;
+}
+.related-notes-view .rn-layout-rows .rn-snippet {
+  margin-top: var(--size-2-1);
+}
+.related-notes-view .rn-layout-rows .rn-tagchips {
+  padding-top: var(--size-2-2);
 }
 
 /* =============================================================================

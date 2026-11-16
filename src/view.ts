@@ -10,6 +10,7 @@ import {
   type Debouncer,
 } from "obsidian";
 import type RelatedNotesPlugin from "./main";
+import type { CardLayout } from "./main";
 import type {
   IndexProgress,
   RankedNote,
@@ -27,6 +28,9 @@ export class RelatedNotesView extends ItemView {
   private readonly plugin: RelatedNotesPlugin;
   private listEl!: HTMLElement;
   private subtitleEl!: HTMLElement;
+  // "147 notes" next to the subtitle once the index is ready; the status line
+  // below it only appears while something is happening.
+  private countEl!: HTMLElement;
   private statusEl!: HTMLElement;
   private unsubscribe: (() => void) | null = null;
 
@@ -139,7 +143,9 @@ export class RelatedNotesView extends ItemView {
       }
     });
 
-    this.subtitleEl = header.createDiv({ cls: "rn-subtitle" });
+    const subRow = header.createDiv({ cls: "rn-sub-row" });
+    this.subtitleEl = subRow.createDiv({ cls: "rn-subtitle" });
+    this.countEl = subRow.createDiv({ cls: "rn-count" });
     this.statusEl = header.createDiv({ cls: "rn-status" });
 
     this.listEl = root.createDiv({ cls: "rn-list" });
@@ -177,6 +183,14 @@ export class RelatedNotesView extends ItemView {
     if (!this.statusEl) return;
     this.statusEl.empty();
     this.statusEl.removeAttribute("aria-label");
+    // Once ready, the count sits next to the subtitle; notes that could not be
+    // read or embedded are counted apart, and hovering says where they are named.
+    const skippedHint =
+      "Skipped notes could not be read or embedded. The developer console (Ctrl+Shift+I or Cmd+Opt+I) names each one.";
+    const ready = p.status === "ready";
+    this.countEl.setText(ready ? `${p.done} notes${p.skipped ? ` · ${p.skipped} skipped` : ""}` : "");
+    if (ready && p.skipped) this.countEl.setAttr("aria-label", skippedHint);
+    else this.countEl.removeAttribute("aria-label");
     // A cold-engine search is warming the model up: that hint owns the status
     // line until runSearch clears the flag (progress events must not clobber it).
     if (this.modelWarmup) {
@@ -197,15 +211,8 @@ export class RelatedNotesView extends ItemView {
       this.statusEl.removeClass("rn-status-error");
       return;
     }
-    // Notes that could not be read or embedded are counted apart from the ones
-    // in the index; hovering the line says where they are named.
     const skipped = p.skipped ? ` · ${p.skipped} skipped` : "";
-    if (p.skipped && (p.status === "building" || p.status === "ready")) {
-      this.statusEl.setAttr(
-        "aria-label",
-        "Skipped notes could not be read or embedded. The developer console (Ctrl+Shift+I or Cmd+Opt+I) names each one.",
-      );
-    }
+    if (p.skipped && p.status === "building") this.statusEl.setAttr("aria-label", skippedHint);
     if (p.status === "building") {
       const pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
       this.statusEl.setText(`Indexing… ${pct}% (${p.done}/${p.total})${skipped}`);
@@ -217,7 +224,7 @@ export class RelatedNotesView extends ItemView {
       this.statusEl.setText(p.message ? `Indexing failed: ${p.message}` : "Indexing failed");
       this.statusEl.addClass("rn-status-error");
     } else if (p.status === "ready") {
-      this.statusEl.setText(`${p.done} notes indexed${skipped}`);
+      this.statusEl.setText("");
       this.statusEl.removeClass("rn-status-error");
     } else {
       this.statusEl.setText("");
@@ -322,6 +329,7 @@ export class RelatedNotesView extends ItemView {
     if (this.searchQuery) return;
     const active = this.anchorFile();
     this.listEl.empty();
+    this.applyLayout();
 
     if (!active || active.extension !== "md") {
       if (this.linksMode) {
@@ -366,6 +374,16 @@ export class RelatedNotesView extends ItemView {
       this.renderCard(item, prevPct);
       prevPct = Math.round(item.score * 100);
     }
+  }
+
+  // The list carries one layout class; the cards below read it to decide what
+  // to draw, and styles.css decides how it looks.
+  private applyLayout(): CardLayout {
+    const layout = this.plugin.settings.cardLayout;
+    for (const l of ["rows", "cards", "pills", "classic"] as const) {
+      this.listEl.toggleClass(`rn-layout-${l}`, l === layout);
+    }
+    return layout;
   }
 
   private renderEmpty(text: string): void {
@@ -467,12 +485,11 @@ export class RelatedNotesView extends ItemView {
     const card = this.listEl.createDiv({ cls: "rn-card" });
     const top = card.createDiv({ cls: "rn-card-top" });
     top.createDiv({ cls: "rn-title", text: file.basename });
-    const pills = card.createDiv({ cls: "rn-pills" });
-    pills.createSpan({ cls: "rn-conn rn-conn-linked", text: "Linked" });
-    const parentPath = file.parent?.path ?? "";
-    if (this.plugin.settings.showFolder && parentPath.length > 0 && parentPath !== "/") {
-      card.createDiv({ cls: "rn-path", text: parentPath });
+    if (this.plugin.settings.cardLayout === "classic") {
+      const pills = card.createDiv({ cls: "rn-pills" });
+      pills.createSpan({ cls: "rn-conn rn-conn-linked", text: "Linked" });
     }
+    this.renderFolder(card, file);
     this.bindCardOpen(card, file);
   }
 
@@ -519,6 +536,7 @@ export class RelatedNotesView extends ItemView {
       );
       return;
     }
+    this.applyLayout();
     let prevSearchPct: number | null = null;
     for (const item of results) {
       this.renderCard(item, prevSearchPct);
@@ -563,16 +581,118 @@ export class RelatedNotesView extends ItemView {
     const card = this.listEl.createDiv({ cls: "rn-card" });
     const top = card.createDiv({ cls: "rn-card-top" });
     top.createDiv({ cls: "rn-title", text: file.basename });
-    const parentPath = file.parent?.path ?? "";
-    if (this.plugin.settings.showFolder && parentPath.length > 0 && parentPath !== "/") {
-      card.createDiv({ cls: "rn-path", text: parentPath });
-    }
+    this.renderFolder(card, file);
     const rel = relativeTime(file.stat.mtime);
     if (rel) card.createDiv({ cls: "rn-recency", text: `edited ${rel}` });
     this.bindCardOpen(card, file);
   }
 
   private renderCard(item: RankedNote, prevPct: number | null = null): void {
+    const layout = this.plugin.settings.cardLayout;
+    if (layout === "classic") {
+      this.renderClassicCard(item, prevPct);
+      return;
+    }
+    // Rows, Cards and Cards with pills share one shape: the title with a quiet
+    // score, the summary line, and (cards only) the reason and folder.
+    const card = this.listEl.createDiv({ cls: "rn-card" });
+    const top = card.createDiv({ cls: "rn-card-top" });
+    const title = top.createDiv({ cls: "rn-title" });
+    const linked = item.connection === "linked";
+    if (linked && layout !== "pills") {
+      const icon = title.createSpan({ cls: "rn-linked-icon", attr: { "aria-label": "Linked" } });
+      setIcon(icon, "link");
+    }
+    title.appendText(item.file.basename);
+
+    // The score: a "~" prefix flags the keyword fallback (approximate).
+    const pct = Math.round(item.score * 100);
+    const score = top.createDiv({ cls: "rn-score-text", text: `${item.approximate ? "~" : ""}${pct}%` });
+    if (item.approximate) score.addClass("rn-score-approx");
+
+    // Rows show only the title, the score and the summary. The card layouts
+    // also show the reason and the folder, as the pill settings allow.
+    const settings = this.plugin.settings;
+    const why = item.reason && item.reason.kind !== "linked" ? this.whyLabel(item.reason) : "";
+    const folder = this.folderOf(item.file);
+    const inCards = layout !== "rows";
+    const whyShown =
+      inCards && why !== "" && (item.reason?.kind === "shared-tags" ? settings.showTagPills : settings.showWhyPills);
+    const folderShown = inCards && folder !== "" && settings.showFolder;
+
+    // The order is wording fused with the link graph, so a card can sit above
+    // one with a higher number. Hovering the score says why the card is here,
+    // and names what the card does not show.
+    const placedByLinks = prevPct !== null && pct > prevPct;
+    const hover = [
+      `${pct}% wording match`,
+      whyShown ? "" : why,
+      folderShown ? "" : folder,
+      placedByLinks ? "placed here by your links rather than by wording" : "",
+    ].filter(Boolean);
+    if (hover.length > 1) score.setAttr("aria-label", hover.join(" · "));
+
+    if (layout === "pills" && (linked || whyShown || folderShown)) {
+      const pills = card.createDiv({ cls: "rn-pills" });
+      if (linked) pills.createSpan({ cls: "rn-pill rn-pill-linked", text: "Linked" });
+      if (whyShown) pills.createSpan({ cls: "rn-pill", text: why });
+      if (folderShown) pills.createDiv({ cls: "rn-path rn-path-row", text: folder });
+    }
+    this.renderSummary(card, item.file);
+    if (layout === "cards") {
+      const meta = [linked ? "Linked" : "", whyShown ? why : "", folderShown ? folder : ""].filter(Boolean);
+      if (meta.length > 0) card.createDiv({ cls: "rn-meta", text: meta.join(" · ") });
+    }
+    this.renderRecency(card, item.file);
+    this.bindCardOpen(card, item.file);
+  }
+
+  // The note's folder, or "" for a note at the vault root.
+  private folderOf(file: TFile): string {
+    const parentPath = file.parent?.path ?? "";
+    return parentPath.length > 0 && parentPath !== "/" ? parentPath : "";
+  }
+
+  // The folder on a link or recent card: a line under the title in the card
+  // layouts, a hover on the title in Rows.
+  private renderFolder(card: HTMLElement, file: TFile): void {
+    const folder = this.folderOf(file);
+    if (!folder) return;
+    if (this.plugin.settings.cardLayout === "rows") {
+      card.querySelector(".rn-title")?.setAttr("aria-label", folder);
+    } else if (this.plugin.settings.showFolder) {
+      card.createDiv({ cls: "rn-path", text: folder });
+    }
+  }
+
+  // Summary line: the reader's one-liner when it has read this note, else the
+  // keyphrase label, else the snippet. The gist rides along as a hover title.
+  private renderSummary(card: HTMLElement, file: TFile): void {
+    if (this.plugin.settings.showSummary) {
+      const one = this.plugin.settings.readerOneLiners
+        ? this.plugin.reader?.oneLiner(file.path) ?? null
+        : null;
+      const summary = one ?? this.plugin.store.getSummary(file);
+      const line = summary.length > 0 ? summary : this.plugin.getSnippet(file);
+      if (line.length > 0) {
+        const el = card.createDiv({ cls: "rn-snippet", text: line });
+        const gist = one ? this.plugin.reader?.gist(file.path) : null;
+        if (gist) el.setAttr("title", gist);
+      }
+    } else if (this.plugin.settings.showSnippet) {
+      const snippet = this.plugin.getSnippet(file);
+      if (snippet.length > 0) card.createDiv({ cls: "rn-snippet", text: snippet });
+    }
+  }
+
+  private renderRecency(card: HTMLElement, file: TFile): void {
+    if (!this.plugin.settings.showRecency) return;
+    const rel = relativeTime(file.stat.mtime);
+    if (rel) card.createDiv({ cls: "rn-recency", text: `edited ${rel}` });
+  }
+
+  // The 4.0 card: filled score pill, connection pill, reason pill, folder.
+  private renderClassicCard(item: RankedNote, prevPct: number | null): void {
     const card = this.listEl.createDiv({ cls: "rn-card" });
 
     const top = card.createDiv({ cls: "rn-card-top" });
@@ -625,30 +745,8 @@ export class RelatedNotesView extends ItemView {
       if (hasPath) pills.createDiv({ cls: "rn-path rn-path-row", text: parentPath });
     }
 
-    // Summary line: the reader's one-liner when it has read this note, else the
-    // keyphrase label, else the snippet. The gist rides along as a hover title.
-    if (this.plugin.settings.showSummary) {
-      const one = this.plugin.settings.readerOneLiners
-        ? this.plugin.reader?.oneLiner(item.file.path) ?? null
-        : null;
-      const summary = one ?? this.plugin.store.getSummary(item.file);
-      const line = summary.length > 0 ? summary : this.plugin.getSnippet(item.file);
-      if (line.length > 0) {
-        const el = card.createDiv({ cls: "rn-snippet", text: line });
-        const gist = one ? this.plugin.reader?.gist(item.file.path) : null;
-        if (gist) el.setAttr("title", gist);
-      }
-    } else if (this.plugin.settings.showSnippet) {
-      const snippet = this.plugin.getSnippet(item.file);
-      if (snippet.length > 0) {
-        card.createDiv({ cls: "rn-snippet", text: snippet });
-      }
-    }
-
-    if (this.plugin.settings.showRecency) {
-      const rel = relativeTime(item.file.stat.mtime);
-      if (rel) card.createDiv({ cls: "rn-recency", text: `edited ${rel}` });
-    }
+    this.renderSummary(card, item.file);
+    this.renderRecency(card, item.file);
 
     this.bindCardOpen(card, item.file);
   }

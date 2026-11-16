@@ -130,6 +130,12 @@ test("predicates and page summaries follow the settings", () => {
   assert.equal(snippet.disabled(), true);
   plugin.settings.showSummary = false;
   assert.equal(snippet.disabled(), false);
+  // Rows show the folder and the reasons only on hover, so their switches rest.
+  const byKey = (k) => controls.find((c) => c.control.key === k).control;
+  assert.equal(plugin.settings.cardLayout, "rows");
+  for (const k of ["showFolder", "showTagPills", "showWhyPills"]) assert.equal(byKey(k).disabled(), true, `${k} in rows`);
+  plugin.settings.cardLayout = "cards";
+  for (const k of ["showFolder", "showTagPills", "showWhyPills"]) assert.equal(byKey(k).disabled(), false, `${k} in cards`);
   const page = (n) => pages.find((p) => p.name === n);
   assert.equal(page("Reader").displayValue(), "Off");
   assert.equal(page("Scope").displayValue(), "2 folders left out · 1 isolated area");
@@ -147,6 +153,12 @@ test("a change saves and reaches the panel, the title index and the reader", asy
 
   await tab.setControlValue("showFolder", false);
   assert.equal(calls.panel, 1);
+
+  const refreshesBefore = tab.refreshCalls;
+  await tab.setControlValue("cardLayout", "pills");
+  assert.equal(plugin.settings.cardLayout, "pills");
+  assert.equal(calls.panel, 2, "a layout change redraws the panel");
+  assert.ok(tab.refreshCalls > refreshesBefore, "a layout change refreshes the switches it rests");
 
   await tab.setControlValue("idleUnloadMinutes", "5");
   assert.equal(plugin.settings.idleUnloadMinutes, 5);
