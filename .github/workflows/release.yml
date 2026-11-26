@@ -68,6 +68,14 @@ jobs:
           # require('onnxruntime-web/package.json') via its "exports" map).
           node scripts/verify-ort-assets.mjs
 
+      - name: Fetch the annotated tag
+        run: |
+          # On a tag push, actions/checkout writes the tag as a lightweight ref
+          # to the commit, so the next step would read the commit message
+          # instead of the tag message. Fetch the tag object itself again.
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          echo "refs/tags/${GITHUB_REF_NAME} is a $(git cat-file -t "refs/tags/${GITHUB_REF_NAME}") object"
+
       - name: Extract release notes from annotated tag
         run: |
           git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > release-notes.md
